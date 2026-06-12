@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from drummer.behaviour import (
+    BehaviourDecision,
+    BehaviourEngine,
+    BehaviourIntent,
+    ConservativePocketDrummer,
+)
 from drummer.feel import (
     DrummerFeelEngine,
     DrummerProfile,
@@ -16,6 +22,10 @@ from drummer.intent import (
 )
 
 __all__ = [
+    "BehaviourDecision",
+    "BehaviourEngine",
+    "BehaviourIntent",
+    "ConservativePocketDrummer",
     "DrummerFeelEngine",
     "DrummerProfile",
     "GrooveAction",
