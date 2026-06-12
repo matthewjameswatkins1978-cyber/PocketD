@@ -1,4 +1,4 @@
-"""Drummer package — event generation, scheduling, humanization, and feel."""
+"""Drummer package — perception-to-behaviour, humanization, and feel."""
 
 from __future__ import annotations
 
@@ -9,11 +9,19 @@ from drummer.feel import (
     TimingStrategy,
 )
 from drummer.humanize import humanize_events
+from drummer.intent import (
+    GrooveAction,
+    GrooveIntent,
+    GrooveIntentEngine,
+)
 
 __all__ = [
     "DrummerFeelEngine",
     "DrummerProfile",
+    "GrooveAction",
     "GrooveEvent",
+    "GrooveIntent",
+    "GrooveIntentEngine",
     "TimingStrategy",
     "humanize_events",
 ]

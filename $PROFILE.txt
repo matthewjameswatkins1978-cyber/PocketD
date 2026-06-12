@@ -1,0 +1,16 @@
+# Friendly suggestions
+Set-PSReadLineOption -PredictionSource History
+Set-PSReadLineOption -PredictionViewStyle InlineView
+Set-PSReadLineKeyHandler -Key Tab -Function MenuComplete
+
+# Easier copy/paste behaviour
+Set-PSReadLineOption -EditMode Windows
+
+# Useful shortcuts
+Set-PSReadLineKeyHandler -Key Ctrl+d -Function DeleteCharOrExit
+Set-PSReadLineKeyHandler -Key Ctrl+l -Function ClearScreen
+
+# Better command history search
+Set-PSReadLineKeyHandler -Key UpArrow -Function HistorySearchBackward
+Set-PSReadLineKeyHandler -Key DownArrow -Function HistorySearchForward
+
