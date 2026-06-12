@@ -1,0 +1,48 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug WAV onset test",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}\\test_wav_onsets_to_midi.py",
+            "args": [
+                "click_120bpm.wav"
+            ],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Debug click generator",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}\\generate_click_track.py",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Debug fake pulse generator",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}\\audio\\pulse_generator.py",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Debug onset detection test",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}\\tests\\test_audio_onset_detection.py",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Debug existing MIDI test",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}\\midi_test.py",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}

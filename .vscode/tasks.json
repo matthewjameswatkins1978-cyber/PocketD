@@ -1,0 +1,60 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Run WAV onset test",
+            "type": "shell",
+            "command": ".venv\\Scripts\\python.exe test_wav_onsets_to_midi.py click_120bpm.wav",
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "label": "Generate click track",
+            "type": "shell",
+            "command": ".venv\\Scripts\\python.exe generate_click_track.py",
+            "problemMatcher": []
+        },
+        {
+            "label": "Run fake pulse generator",
+            "type": "shell",
+            "command": ".venv\\Scripts\\python.exe audio\\pulse_generator.py",
+            "problemMatcher": []
+        },
+        {
+            "label": "Run onset detection test",
+            "type": "shell",
+            "command": ".venv\\Scripts\\python.exe -m pytest tests/test_audio_onset_detection.py",
+            "problemMatcher": []
+        },
+        {
+            "label": "Run tempo tracker test",
+            "type": "shell",
+            "command": ".venv\\Scripts\\python.exe -m pytest tests/test_tempo_tracker.py",
+            "problemMatcher": []
+        },
+        {
+            "label": "Run groove selection test",
+            "type": "shell",
+            "command": ".venv\\Scripts\\python.exe -m pytest tests/test_groove_selection.py",
+            "problemMatcher": []
+        },
+        {
+            "label": "Run groove selection demo",
+            "type": "shell",
+            "command": ".venv\\Scripts\\python.exe demo_groove_selection.py",
+            "problemMatcher": []
+        },
+        {
+            "label": "Run existing MIDI test",
+            "type": "shell",
+            "command": ".venv\\Scripts\\python.exe midi_test.py",
+            "problemMatcher": []
+        },
+        {
+            "label": "Install requirements",
+            "type": "shell",
+            "command": ".venv\\Scripts\\python.exe -m pip install -r requirements.txt",
+            "problemMatcher": []
+        }
+    ]
+}

@@ -1,0 +1,66 @@
+grooves:
+  - id: simple_rock
+    name: Simple Rock
+    bars: 1
+    steps: 16
+    kick_steps: [0, 8]
+    snare_steps: [4, 12]
+    hat_steps: [0, 2, 4, 6, 8, 10, 12, 14]
+    energy: 3
+    density: medium
+    risk: low
+
+  - id: motorik
+    name: Motorik
+    bars: 1
+    steps: 16
+    kick_steps: [0, 4, 8, 12]
+    snare_steps: [4, 12]
+    hat_steps: [0, 2, 4, 6, 8, 10, 12, 14]
+    energy: 4
+    density: high
+    risk: low
+
+  - id: half_time
+    name: Half Time
+    bars: 1
+    steps: 16
+    kick_steps: [0, 10]
+    snare_steps: [8]
+    hat_steps: [0, 2, 4, 6, 8, 10, 12, 14]
+    energy: 2
+    density: low
+    risk: low
+
+  - id: shuffle
+    name: Shuffle
+    bars: 1
+    steps: 16
+    kick_steps: [0, 8]
+    snare_steps: [4, 12]
+    hat_steps: [0, 2, 4, 6, 8, 10, 12, 14]
+    energy: 3
+    density: medium
+    risk: medium
+
+  - id: funk_pocket
+    name: Funk Pocket
+    bars: 1
+    steps: 16
+    kick_steps: [0, 6, 8, 14]
+    snare_steps: [4, 12]
+    hat_steps: [0, 2, 4, 6, 8, 10, 12, 14]
+    energy: 4
+    density: high
+    risk: medium
+
+  - id: punk_drive
+    name: Punk Drive
+    bars: 1
+    steps: 16
+    kick_steps: [0, 4, 8, 12]
+    snare_steps: [4, 12]
+    hat_steps: [0, 2, 4, 6, 8, 10, 12, 14]
+    energy: 5
+    density: high
+    risk: high
