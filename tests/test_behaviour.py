@@ -106,7 +106,7 @@ class TestBehaviourIntent:
     def test_contains_all_expected_values(self) -> None:
         expected = {
             "LISTEN", "BAIL", "ENTER_SOFT", "ENTER_FULL", "MAINTAIN",
-            "BUILD", "REDUCE", "FILL", "CRASH", "DROP",
+            "BUILD", "REDUCE", "ANCHOR", "FILL", "CRASH", "DROP",
         }
         actual = set(BehaviourIntent.__members__.keys())
         assert actual == expected

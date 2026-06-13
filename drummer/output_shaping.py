@@ -1,0 +1,447 @@
+"""Behaviour-Driven Output Shaping.
+
+Translates behaviour intent into MIDI-note-level modifications.
+Accepts ``GrooveEvent`` lists and ``BehaviourIntent`` values and returns
+shaped event lists that match the drummer's current intention.
+
+Design contract
+---------------
+* Pure: input notes + intent → shaped notes (no side effects, no clock).
+* Deterministic: same inputs always produce same outputs.
+* Instrument-aware: identifies kick, snare, hi_hat, ride, crash, toms.
+* Preserves time order (sorted by grid_position then bar_index).
+* Never crashes on unknown instruments.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from drummer.behaviour import BehaviourIntent
+from drummer.feel import GrooveEvent, _instrument_group
+
+
+# ---------------------------------------------------------------------------
+# OutputShapingConfig
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class OutputShapingConfig:
+    """Tuning knobs for the Output Shaper.
+
+    All parameters have sensible defaults.  Tweak them to adjust how
+    aggressively each intent shapes the output.
+    """
+
+    # Reduce settings
+    reduce_min_snare_velocity: int = 60
+    """Snare notes with velocity below this are candidates for removal."""
+
+    reduce_thin_hats: bool = True
+    """When True, thin 16th-note hi-hats to 8th notes during REDUCE."""
+
+    reduce_strip_ghosts: bool = True
+    """When True, remove ghost notes during REDUCE."""
+
+    reduce_preserve_strong_beats: bool = True
+    """When True, preserve kick on beat 1 and snare on 2 & 4 during REDUCE."""
+
+    # Anchor settings
+    anchor_strip_ghosts: bool = True
+    """When True, remove ghost notes during ANCHOR."""
+
+    anchor_strip_syncopated: bool = True
+    """When True, remove syncopated kick decorations (off-beat kicks)."""
+
+    anchor_simplify_hats: bool = True
+    """When True, thin hi-hats to quarter or 8th notes during ANCHOR."""
+
+    anchor_reduce_velocity_variation: bool = True
+    """When True, squash velocity variation toward a target during ANCHOR."""
+
+    anchor_target_velocity: int = 100
+    """Target velocity for velocity simplification during ANCHOR."""
+
+    # Build settings
+    build_velocity_boost: int = 12
+    """Add this much velocity during BUILD (clamped at 127)."""
+
+    build_max_velocity: int = 127
+    """Maximum velocity allowed after BUILD boost."""
+
+    build_open_hats: bool = True
+    """When True, convert closed hi-hat articulation to 'open' during BUILD."""
+
+    # Enter settings
+    enter_velocity_cap: int = 100
+    """Maximum velocity during ENTER_SOFT (first entry should not be obnoxious)."""
+
+    enter_soft_scale: float = 0.85
+    """Scale factor applied to velocities during ENTER_SOFT."""
+
+    # Ghost note identification
+    ghost_max_velocity: int = 35
+    """Notes with velocity at or below this are considered ghost-velocity."""
+
+
+# ---------------------------------------------------------------------------
+# Instrument classification helpers
+# ---------------------------------------------------------------------------
+
+
+def _is_kick(evt: GrooveEvent) -> bool:
+    """True if this event is a kick drum."""
+    return _instrument_group(evt.instrument) == "kick"
+
+
+def _is_snare(evt: GrooveEvent) -> bool:
+    """True if this event is a snare drum."""
+    return _instrument_group(evt.instrument) == "snare"
+
+
+def _is_hat(evt: GrooveEvent) -> bool:
+    """True if this event is a hi-hat."""
+    return _instrument_group(evt.instrument) == "hi_hat"
+
+
+def _is_ride(evt: GrooveEvent) -> bool:
+    """True if this event is a ride cymbal."""
+    return _instrument_group(evt.instrument) == "ride"
+
+
+def _is_crash(evt: GrooveEvent) -> bool:
+    """True if this event is a crash cymbal."""
+    return _instrument_group(evt.instrument) == "crash"
+
+
+def _is_tom(evt: GrooveEvent) -> bool:
+    """True if this event is a tom drum."""
+    return _instrument_group(evt.instrument) == "toms"
+
+
+def _is_ghost(evt: GrooveEvent, config: OutputShapingConfig) -> bool:
+    """True if this event is a ghost note by articulation or velocity."""
+    if evt.articulation == "ghost":
+        return True
+    if evt.source_role == "ghost":
+        return True
+    if evt.velocity <= config.ghost_max_velocity and (
+        _is_snare(evt) or _is_hat(evt)
+    ):
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Beat position helpers
+# ---------------------------------------------------------------------------
+
+
+def _beat_in_bar(grid_position: int) -> int:
+    """Return the beat number (1-4) for a 16th-note grid position."""
+    # 0->1, 4->2, 8->3, 12->4, 16 wraps to 0
+    pos_in_bar = grid_position % 16
+    beat_map = {0: 1, 4: 2, 8: 3, 12: 4}
+    return beat_map.get(pos_in_bar, -1)
+
+
+def _is_strong_beat(grid_position: int) -> bool:
+    """True if this grid position falls on a quarter-note pulse (beat)."""
+    return (grid_position % 4) == 0
+
+
+def _is_eighth_note(grid_position: int) -> bool:
+    """True if this grid position is an 8th note (even 16th position)."""
+    return (grid_position % 2) == 0
+
+
+# ---------------------------------------------------------------------------
+# BehaviourOutputShaper
+# ---------------------------------------------------------------------------
+
+
+class BehaviourOutputShaper:
+    """Shapes a list of GrooveEvents according to a BehaviourIntent.
+
+    Usage
+    -----
+    >>> shaper = BehaviourOutputShaper()
+    >>> shaped = shaper.shape(groove_events, BehaviourIntent.REDUCE)
+    """
+
+    def __init__(self, config: OutputShapingConfig | None = None) -> None:
+        self.config = config if config is not None else OutputShapingConfig()
+
+    def shape(
+        self,
+        events: list[GrooveEvent],
+        intent: BehaviourIntent,
+        bar_position: int | None = None,
+    ) -> list[GrooveEvent]:
+        """Shape a sequence of GrooveEvents according to the given intent.
+
+        Parameters
+        ----------
+        events : list[GrooveEvent]
+            Input drum events to shape.
+        intent : BehaviourIntent
+            The current behaviour intention.
+        bar_position : int | None
+            Current 16th-note position within the bar (optional context).
+
+        Returns
+        -------
+        list[GrooveEvent]
+            Shaped events, sorted by grid_position then bar_index.
+        """
+        # ANCHOR needs to be able to generate pulse from empty input
+        if intent != BehaviourIntent.ANCHOR and not events:
+            return []
+
+        # Dispatch to intent-specific shaper
+        if intent == BehaviourIntent.MAINTAIN:
+            result = self._shape_maintain(events)
+        elif intent == BehaviourIntent.REDUCE:
+            result = self._shape_reduce(events)
+        elif intent == BehaviourIntent.ANCHOR:
+            result = self._shape_anchor(events)
+        elif intent == BehaviourIntent.BUILD:
+            result = self._shape_build(events)
+        elif intent in (BehaviourIntent.ENTER_SOFT, BehaviourIntent.ENTER_FULL):
+            result = self._shape_enter(events)
+        elif intent in (BehaviourIntent.BAIL, BehaviourIntent.DROP):
+            result = self._shape_bail(events)
+        else:
+            # LISTEN, FILL, CRASH, etc. — pass through unchanged
+            result = list(events)
+
+        # Always sort output by bar_index then grid_position
+        result.sort(key=lambda e: (e.bar_index, e.grid_position))
+        return result
+
+    # ------------------------------------------------------------------
+    # MAINTAIN — preserve the pocket
+    # ------------------------------------------------------------------
+
+    def _shape_maintain(self, events: list[GrooveEvent]) -> list[GrooveEvent]:
+        """MAINTAIN leaves the groove mostly unchanged."""
+        return list(events)
+
+    # ------------------------------------------------------------------
+    # REDUCE — simplify when the player is busy
+    # ------------------------------------------------------------------
+
+    def _shape_reduce(self, events: list[GrooveEvent]) -> list[GrooveEvent]:
+        """REDUCE strips ghost notes, decorations, and thins hats."""
+        cfg = self.config
+        result: list[GrooveEvent] = []
+
+        for evt in events:
+            # Remove ghost notes — but NEVER ghost-strip essential backbeat
+            if cfg.reduce_strip_ghosts and _is_ghost(evt, cfg):
+                # Preserve snare backbeat even if low-velocity (ghost-like)
+                if _is_snare(evt):
+                    beat = _beat_in_bar(evt.grid_position)
+                    if cfg.reduce_preserve_strong_beats and beat in (2, 4) and _is_strong_beat(evt.grid_position):
+                        pass  # keep backbeat snare even if ghost-velocity
+                    else:
+                        continue
+                # Preserve kick on beat 1 even if ghost-like
+                elif _is_kick(evt):
+                    if cfg.reduce_preserve_strong_beats and _is_strong_beat(evt.grid_position) and _beat_in_bar(evt.grid_position) == 1:
+                        pass  # keep beat-1 kick
+                    else:
+                        continue
+                else:
+                    continue  # remove ghost
+
+            # Remove low-velocity snare decorations (below threshold, not already ghost-stripped)
+            if _is_snare(evt) and evt.velocity < cfg.reduce_min_snare_velocity:
+                beat = _beat_in_bar(evt.grid_position)
+                # Always preserve snare on beats 2 and 4
+                if not (cfg.reduce_preserve_strong_beats and beat in (2, 4) and _is_strong_beat(evt.grid_position)):
+                    continue  # low-velocity snare, not essential backbeat → remove
+
+            # Thin 16th-note hi-hats to 8th notes
+            if cfg.reduce_thin_hats and _is_hat(evt):
+                if not _is_eighth_note(evt.grid_position):
+                    continue  # remove off-8th hats
+
+            # Preserve kick on beat 1 always
+            if _is_kick(evt):
+                beat = _beat_in_bar(evt.grid_position)
+                if cfg.reduce_preserve_strong_beats and beat == 1 and _is_strong_beat(evt.grid_position):
+                    pass  # always keep beat 1 kick
+                # Extra kicks not on strong beats may be removed if we want
+                # For now, keep all kicks — safe default
+
+            result.append(evt)
+
+        return result
+
+    # ------------------------------------------------------------------
+    # ANCHOR — become clearer and more metronomic
+    # ------------------------------------------------------------------
+
+    def _shape_anchor(self, events: list[GrooveEvent]) -> list[GrooveEvent]:
+        """ANCHOR strips decorations and simplifies to a clear pulse."""
+        cfg = self.config
+        result: list[GrooveEvent] = []
+
+        for evt in events:
+            # Remove ghost notes
+            if cfg.anchor_strip_ghosts and _is_ghost(evt, cfg):
+                continue
+
+            # Strip syncopated kick decorations
+            if cfg.anchor_strip_syncopated and _is_kick(evt):
+                beat = _beat_in_bar(evt.grid_position)
+                # Keep only kicks on beats 1 and 3 (strong beats)
+                if not _is_strong_beat(evt.grid_position):
+                    continue
+                if beat not in (1, 3):
+                    continue
+
+            # Strip syncopated snare decorations — only 2 and 4
+            if cfg.anchor_strip_syncopated and _is_snare(evt):
+                beat = _beat_in_bar(evt.grid_position)
+                if not _is_strong_beat(evt.grid_position):
+                    continue
+                if beat not in (2, 4):
+                    continue
+
+            # Simplify hi-hats to quarter or 8th notes
+            if cfg.anchor_simplify_hats and _is_hat(evt):
+                if not _is_eighth_note(evt.grid_position):
+                    continue
+                # Prefer quarter notes — remove off-beat 8th hats
+                if not _is_strong_beat(evt.grid_position):
+                    continue
+
+            # Reduce velocity variation
+            if cfg.anchor_reduce_velocity_variation:
+                target = cfg.anchor_target_velocity
+                current = evt.velocity
+                # Pull toward target (blend 50%)
+                new_vel = int(current + (target - current) * 0.5)
+                new_vel = max(1, min(127, new_vel))
+                if new_vel != current:
+                    evt = evt.copy_with(velocity=new_vel)
+
+            result.append(evt)
+
+        # Ensure minimum anchor pulse: if kick on 1 is missing, add it
+        # if kick on 3 is missing, add a simple one
+        # This is done by checking what survives the strip
+        has_beat1_kick = any(
+            _is_kick(e) and _is_strong_beat(e.grid_position)
+            and _beat_in_bar(e.grid_position) == 1
+            for e in result
+        )
+        has_beat2_snare = any(
+            _is_snare(e) and _is_strong_beat(e.grid_position)
+            and _beat_in_bar(e.grid_position) == 2
+            for e in result
+        )
+        has_beat3_kick = any(
+            _is_kick(e) and _is_strong_beat(e.grid_position)
+            and _beat_in_bar(e.grid_position) == 3
+            for e in result
+        )
+        has_beat4_snare = any(
+            _is_snare(e) and _is_strong_beat(e.grid_position)
+            and _beat_in_bar(e.grid_position) == 4
+            for e in result
+        )
+
+        # Determine bar/time from existing events
+        bar_index = events[0].bar_index if events else 0
+
+        if not has_beat1_kick:
+            result.append(GrooveEvent(
+                instrument="kick", grid_position=0, bar_index=bar_index,
+                velocity=cfg.anchor_target_velocity, articulation="default",
+                source_role="main",
+            ))
+
+        if not has_beat2_snare:
+            result.append(GrooveEvent(
+                instrument="snare", grid_position=4, bar_index=bar_index,
+                velocity=cfg.anchor_target_velocity, articulation="default",
+                source_role="main",
+            ))
+
+        if not has_beat3_kick:
+            result.append(GrooveEvent(
+                instrument="kick", grid_position=8, bar_index=bar_index,
+                velocity=cfg.anchor_target_velocity, articulation="default",
+                source_role="main",
+            ))
+
+        if not has_beat4_snare:
+            result.append(GrooveEvent(
+                instrument="snare", grid_position=12, bar_index=bar_index,
+                velocity=cfg.anchor_target_velocity, articulation="default",
+                source_role="main",
+            ))
+
+        # Add basic quarter-note hats if no hats remain
+        has_hats = any(_is_hat(e) for e in result)
+        if not has_hats:
+            for pos in (0, 4, 8, 12):
+                result.append(GrooveEvent(
+                    instrument="hi_hat", grid_position=pos, bar_index=bar_index,
+                    velocity=cfg.anchor_target_velocity, articulation="default",
+                    source_role="main",
+                ))
+
+        return result
+
+    # ------------------------------------------------------------------
+    # BUILD — increase energy in a controlled way
+    # ------------------------------------------------------------------
+
+    def _shape_build(self, events: list[GrooveEvent]) -> list[GrooveEvent]:
+        """BUILD boosts velocity and optionally opens hats."""
+        cfg = self.config
+        result: list[GrooveEvent] = []
+
+        for evt in events:
+            # Boost velocity (clamped)
+            new_vel = min(cfg.build_max_velocity, evt.velocity + cfg.build_velocity_boost)
+            evt = evt.copy_with(velocity=new_vel)
+
+            # Open hats if configured
+            if cfg.build_open_hats and _is_hat(evt):
+                if evt.articulation in ("default", "closed"):
+                    evt = evt.copy_with(articulation="open")
+
+            result.append(evt)
+
+        return result
+
+    # ------------------------------------------------------------------
+    # ENTER_SOFT / ENTER_FULL — controlled entry
+    # ------------------------------------------------------------------
+
+    def _shape_enter(self, events: list[GrooveEvent]) -> list[GrooveEvent]:
+        """ENTER softens velocities for a controlled entry."""
+        cfg = self.config
+        result: list[GrooveEvent] = []
+
+        for evt in events:
+            new_vel = int(evt.velocity * cfg.enter_soft_scale)
+            new_vel = max(1, min(cfg.enter_velocity_cap, new_vel))
+            evt = evt.copy_with(velocity=new_vel)
+            result.append(evt)
+
+        return result
+
+    # ------------------------------------------------------------------
+    # BAIL / DROP — suppress completely
+    # ------------------------------------------------------------------
+
+    def _shape_bail(self, events: list[GrooveEvent]) -> list[GrooveEvent]:
+        """BAIL and DROP return an empty output list."""
+        return []

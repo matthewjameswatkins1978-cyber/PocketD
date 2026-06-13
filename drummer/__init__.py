@@ -7,6 +7,7 @@ from drummer.behaviour import (
     BehaviourEngine,
     BehaviourIntent,
     ConservativePocketDrummer,
+    FeatureDrivenBehaviourEngine,
 )
 from drummer.feel import (
     DrummerFeelEngine,
@@ -28,6 +29,7 @@ __all__ = [
     "ConservativePocketDrummer",
     "DrummerFeelEngine",
     "DrummerProfile",
+    "FeatureDrivenBehaviourEngine",
     "GrooveAction",
     "GrooveEvent",
     "GrooveIntent",

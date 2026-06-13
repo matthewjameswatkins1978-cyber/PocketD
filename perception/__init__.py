@@ -11,21 +11,29 @@ Module 2 — Pulse Tracker
 Module 3 — Bar / Downbeat Tracker
     Estimates likely bar position and downbeat location from events + pulse.
 
+Module 5 — Feature Monitor
+    Continuously summarises what the player appears to be doing musically
+    using simple explainable features.  Produces FeatureSnapshot values
+    for the behaviour engine.  Does NOT make drum decisions itself.
+
 Long-term pipeline
 ------------------
-Audio → Event Listener → Pulse Tracker → Bar Tracker → Groove Tracker
-    → Energy Tracker → Section Memory → Musical State Machine → Drummer
+Audio → Event Listener → Pulse Tracker → Bar Tracker → Feature Monitor
+    → Groove Tracker → Energy Tracker → Section Memory → Behaviour Engine → Drummer
 
 Public API
 ----------
-- MusicalEvent          — dataclass for a single detected musical event
-- FrequencyRegion       — Literal type for rough frequency bands
-- PulseHypothesis       — a single competing BPM hypothesis
-- PulseState            — current belief state of the pulse tracker
-- PulseTracker          — maintains competing pulse hypotheses
-- BarHypothesis         — a single competing bar-position hypothesis
-- BarState              — current belief state of the bar tracker
-- BarTracker            — maintains competing bar-phase hypotheses
+- MusicalEvent              — dataclass for a single detected musical event
+- FrequencyRegion           — Literal type for rough frequency bands
+- PulseHypothesis           — a single competing BPM hypothesis
+- PulseState                — current belief state of the pulse tracker
+- PulseTracker              — maintains competing pulse hypotheses
+- BarHypothesis             — a single competing bar-position hypothesis
+- BarState                  — current belief state of the bar tracker
+- BarTracker                — maintains competing bar-phase hypotheses
+- FeatureSnapshot           — point-in-time summary of player behaviour
+- FeatureMonitorConfig      — tuning knobs for the Feature Monitor
+- FeatureMonitor            — observes events, produces FeatureSnapshots
 """
 
 from __future__ import annotations
@@ -39,6 +47,7 @@ from perception.event_listener import (
     detect_events_from_audio,
 )
 from perception.frequency import classify_frequency
+from perception.features import FeatureMonitor, FeatureMonitorConfig, FeatureSnapshot
 from perception.models import FrequencyRegion, MusicalEvent
 from perception.pulse import PulseHypothesis, PulseState, PulseTracker
 
@@ -49,6 +58,9 @@ __all__ = [
     "BarState",
     "BarTracker",
     "EventListener",
+    "FeatureMonitor",
+    "FeatureMonitorConfig",
+    "FeatureSnapshot",
     "FrequencyRegion",
     "MusicalEvent",
     "PulseHypothesis",

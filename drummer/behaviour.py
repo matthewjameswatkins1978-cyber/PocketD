@@ -3,6 +3,8 @@
 Stage 1: Foundation with BAIL logic, EMA smoothing, intent tracking.
 Stage 2: LISTEN / ENTER_SOFT / ENTER_FULL / MAINTAIN with pulse and bar awareness.
 Stage 3: BUILD / REDUCE / DROP dynamic energy-response behaviour.
+Stage 4: Feature-driven behaviour using FeatureSnapshot for BUILD, REDUCE,
+    ANCHOR, ENTER, and BAIL decisions with hysteresis and confirmation.
 
 Does NOT generate MIDI, sequence notes, or schedule beats.
 Decides *intent only* — what kind of drumming behaviour is appropriate.
@@ -12,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -34,6 +36,7 @@ class BehaviourIntent(str, Enum):
     MAINTAIN = "maintain"
     BUILD = "build"
     REDUCE = "reduce"
+    ANCHOR = "anchor"
     FILL = "fill"
     CRASH = "crash"
     DROP = "drop"
@@ -82,6 +85,19 @@ class DrummerProfile:
     min_reduce_duration_seconds: float = 2.0
     min_drop_duration_seconds: float = 1.0
 
+    # Stage 4 — feature-driven behaviour thresholds
+    enter_certainty_threshold: float = 0.65
+    enter_repetition_threshold: float = 0.70
+    enter_confirmation_snapshots: int = 3
+    build_change_threshold: float = 0.20
+    build_certainty_threshold: float = 0.55
+    reduce_density_threshold: float = 0.75
+    anchor_certainty_threshold: float = 0.40
+    anchor_repetition_threshold: float = 0.35
+    anchor_phase_threshold: float = 0.45
+    feature_bail_silence_seconds: float = 1.50
+    feature_hysteresis_margin: float = 0.10
+
 
 # Conservative default — stable, doesn't jump at minor changes
 ConservativePocketDrummer = DrummerProfile(
@@ -111,6 +127,18 @@ ConservativePocketDrummer = DrummerProfile(
     min_build_duration_seconds=2.0,
     min_reduce_duration_seconds=2.0,
     min_drop_duration_seconds=1.0,
+    # Stage 4 defaults
+    enter_certainty_threshold=0.65,
+    enter_repetition_threshold=0.70,
+    enter_confirmation_snapshots=3,
+    build_change_threshold=0.20,
+    build_certainty_threshold=0.55,
+    reduce_density_threshold=0.75,
+    anchor_certainty_threshold=0.40,
+    anchor_repetition_threshold=0.35,
+    anchor_phase_threshold=0.45,
+    feature_bail_silence_seconds=1.50,
+    feature_hysteresis_margin=0.10,
 )
 
 
@@ -135,7 +163,7 @@ class BehaviourDecision:
 
 
 # ---------------------------------------------------------------------------
-# BehaviourEngine — the core decision loop
+# BehaviourEngine — the core decision loop (Stages 1-3, unchanged)
 # ---------------------------------------------------------------------------
 
 
@@ -939,3 +967,492 @@ class BehaviourEngine:
         if previous is None:
             return current
         return alpha * current + (1 - alpha) * previous
+
+
+# ============================================================================
+# Stage 4 — Feature-Driven Behaviour Engine
+# ============================================================================
+
+
+class FeatureDrivenBehaviourEngine:
+    """Feature-driven behaviour engine using ``FeatureSnapshot``.
+
+    This engine replaces raw event processing with structured feature
+    evaluation.  It produces ``BehaviourDecision`` values from
+    ``FeatureSnapshot`` objects rather than raw ``MusicalEvent`` lists.
+
+    Priority order within a single evaluation:
+        1. BAIL — silence exceeded feature bail threshold
+        2. ENTER — pre-entry gating with confirmation counter
+        3. ANCHOR — low certainty, poor repetition, poor phase
+        4. BUILD — rising strength + change_score, decent certainty
+        5. REDUCE — density inversion (player too busy)
+        6. MAINTAIN — default bias to hold the pocket
+        7. LISTEN — fallback (pre-entry without sufficient evidence)
+    """
+
+    def __init__(self, profile: DrummerProfile | None = None) -> None:
+        self.profile = profile if profile is not None else ConservativePocketDrummer
+        self.previous_intent: BehaviourIntent = BehaviourIntent.LISTEN
+        self.has_entered: bool = False
+        self.last_snapshot: Optional[Any] = None  # FeatureSnapshot or None
+
+        # Confirmation tracking
+        self._enter_confirmation_count: int = 0
+        self._same_intent_count: int = 0
+
+        # Timestamp tracking
+        self._last_eval_time: float = 0.0
+        self.entered_at: float | None = None
+
+    def evaluate(
+        self,
+        snapshot,
+        pulse_state: Any = None,
+        bar_state: Any = None,
+    ) -> BehaviourDecision:
+        """Evaluate a ``FeatureSnapshot`` and return a behavioural decision.
+
+        Parameters
+        ----------
+        snapshot : FeatureSnapshot
+            Current feature summary from the Feature Monitor.
+        pulse_state : Any, optional
+            PulseState for pulse confidence extraction (optional).
+        bar_state : Any, optional
+            BarState for bar confidence extraction (optional).
+
+        Returns
+        -------
+        BehaviourDecision
+        """
+        self.last_snapshot = snapshot
+        now = snapshot.timestamp
+        self._last_eval_time = now
+
+        # 1. BAIL — silence override (highest priority)
+        bail = self._check_feature_bail(snapshot)
+        if bail is not None:
+            self._record_intent_change(bail.intent)
+            return bail
+
+        # 2. Pre-entry: check ENTER conditions
+        if not self.has_entered:
+            return self._evaluate_entry(snapshot, pulse_state, bar_state)
+
+        # 3. Priority-ordered dynamic decisions after entry
+        # ANCHOR — protect the pocket when player is uncertain
+        anchor = self._check_anchor(snapshot)
+        if anchor is not None:
+            self._record_intent_change(anchor.intent)
+            return anchor
+
+        # BUILD — rising energy and change
+        build = self._check_feature_build(snapshot)
+        if build is not None:
+            self._record_intent_change(build.intent)
+            return build
+
+        # REDUCE — density inversion (player too busy)
+        reduce_ = self._check_feature_reduce(snapshot)
+        if reduce_ is not None:
+            self._record_intent_change(reduce_.intent)
+            return reduce_
+
+        # Default: MAINTAIN — hold the pocket
+        maintain = self._make_maintain(snapshot)
+        self._record_intent_change(maintain.intent)
+        return maintain
+
+    def reset(self) -> None:
+        """Clear all internal state back to factory-fresh."""
+        self.previous_intent = BehaviourIntent.LISTEN
+        self.has_entered = False
+        self.last_snapshot = None
+        self._enter_confirmation_count = 0
+        self._same_intent_count = 0
+        self._last_eval_time = 0.0
+        self.entered_at = None
+
+    # ------------------------------------------------------------------
+    # Feature BAIL
+    # ------------------------------------------------------------------
+
+    def _check_feature_bail(self, snap) -> BehaviourDecision | None:
+        """Return BAIL if silence exceeds the feature bail threshold.
+
+        BAIL only fires after the engine has entered (has_entered is True).
+        An empty pre-entry engine with long silence stays in LISTEN.
+        """
+        # Bail only makes sense after we've entered — otherwise we're
+        # just waiting for input and should stay in LISTEN.
+        if not self.has_entered:
+            return None
+
+        profile = self.profile
+        silence = snap.silence_duration
+
+        if silence > profile.feature_bail_silence_seconds:
+            return BehaviourDecision(
+                intent=BehaviourIntent.BAIL,
+                confidence=min(1.0, silence / (profile.feature_bail_silence_seconds * 2)),
+                reason="Feature BAIL: silence exceeded feature bail threshold",
+                scores={
+                    "silence_duration": silence,
+                    "feature_bail_silence_seconds": profile.feature_bail_silence_seconds,
+                },
+                evaluated_at=snap.timestamp,
+            )
+
+        return None
+
+    # ------------------------------------------------------------------
+    # ENTER logic
+    # ------------------------------------------------------------------
+
+    def _evaluate_entry(
+        self,
+        snap,
+        pulse_state: Any,
+        bar_state: Any,
+    ) -> BehaviourDecision:
+        """Check whether to ENTER or continue LISTENing.
+
+        Entry requires:
+        * repetition_stability >= enter_repetition_threshold
+        * player_certainty >= enter_certainty_threshold
+        * If phase_alignment is available, it should not be terrible
+        * Sustained evidence (confirmation counter)
+        """
+        profile = self.profile
+
+        stability = snap.repetition_stability
+        certainty = snap.player_certainty
+        phase = snap.phase_alignment
+
+        # Check basic thresholds
+        stable_enough = stability >= profile.enter_repetition_threshold
+        certain_enough = certainty >= profile.enter_certainty_threshold
+        phase_ok = (
+            phase is None
+            or phase >= 0.5  # phase not actively bad
+        )
+
+        if stable_enough and certain_enough and phase_ok:
+            self._enter_confirmation_count += 1
+        else:
+            # Reset confirmation on any failed snapshot
+            self._enter_confirmation_count = 0
+
+        # Require sustained confirmation
+        if self._enter_confirmation_count >= profile.enter_confirmation_snapshots:
+            self.has_entered = True
+            self.entered_at = snap.timestamp
+            return BehaviourDecision(
+                intent=BehaviourIntent.ENTER_SOFT,
+                confidence=certainty,
+                reason="Feature ENTER: sustained repetition stability and player certainty",
+                scores={
+                    "repetition_stability": stability,
+                    "player_certainty": certainty,
+                    "phase_alignment": phase or 0.0,
+                    "enter_certainty_threshold": profile.enter_certainty_threshold,
+                    "enter_repetition_threshold": profile.enter_repetition_threshold,
+                    "confirmation_count": self._enter_confirmation_count,
+                },
+                evaluated_at=snap.timestamp,
+            )
+
+        # Still LISTENing
+        blocks: list[str] = []
+        if not stable_enough:
+            blocks.append(f"repetition_stability {stability:.3f} < {profile.enter_repetition_threshold}")
+        if not certain_enough:
+            blocks.append(f"player_certainty {certainty:.3f} < {profile.enter_certainty_threshold}")
+        if not phase_ok:
+            blocks.append(f"phase_alignment {phase:.3f} is poor")
+
+        return BehaviourDecision(
+            intent=BehaviourIntent.LISTEN,
+            confidence=0.3,
+            reason=f"Feature LISTEN: {', '.join(blocks)}" if blocks else "Feature LISTEN: waiting for entry conditions",
+            scores={
+                "repetition_stability": stability,
+                "player_certainty": certainty,
+                "phase_alignment": phase or 0.0,
+                "confirmation_count": self._enter_confirmation_count,
+            },
+            evaluated_at=snap.timestamp,
+        )
+
+    # ------------------------------------------------------------------
+    # ANCHOR logic
+    # ------------------------------------------------------------------
+
+    def _check_anchor(self, snap) -> BehaviourDecision | None:
+        """Return ANCHOR if the player appears uncertain.
+
+        ANCHOR means: simplify, play clearly, support the pulse metronomically.
+        It is a protective state — the drummer should NOT be clever.
+
+        Triggers when:
+        * player_certainty < anchor_certainty_threshold
+        * or repetition_stability < anchor_repetition_threshold
+        * or phase_alignment < anchor_phase_threshold (if provided)
+
+        Hysteresis: once in ANCHOR, recovery requires values above
+        (threshold + hysteresis_margin).
+        """
+        profile = self.profile
+
+        certainty = snap.player_certainty
+        stability = snap.repetition_stability
+        phase = snap.phase_alignment
+
+        if self.previous_intent == BehaviourIntent.ANCHOR:
+            # Already in ANCHOR — check if we've recovered enough to leave
+            recovery_certainty = profile.anchor_certainty_threshold + profile.feature_hysteresis_margin
+            recovery_stability = profile.anchor_repetition_threshold + profile.feature_hysteresis_margin
+            recovery_phase = profile.anchor_phase_threshold + profile.feature_hysteresis_margin
+            if (
+                certainty >= recovery_certainty
+                and stability >= recovery_stability
+                and (phase is None or phase >= recovery_phase)
+            ):
+                return None  # Recovered enough to leave ANCHOR
+            # Still unsteady — stay in ANCHOR
+            # Determine anchor confidence
+            low_certainty = certainty < profile.anchor_certainty_threshold
+            low_stability = stability < profile.anchor_repetition_threshold
+            poor_phase = (
+                phase is not None
+                and phase < profile.anchor_phase_threshold
+            )
+            anchor_conf = 1.0 - max(
+                (profile.anchor_certainty_threshold - certainty) if low_certainty else 0,
+                (profile.anchor_repetition_threshold - stability) if low_stability else 0,
+                (profile.anchor_phase_threshold - (phase or 0)) if poor_phase else 0,
+            )
+            anchor_conf = max(0.0, min(1.0, anchor_conf))
+
+            parts: list[str] = []
+            if low_certainty:
+                parts.append(f"player_certainty {certainty:.3f} < {profile.anchor_certainty_threshold}")
+            if low_stability:
+                parts.append(f"repetition_stability {stability:.3f} < {profile.anchor_repetition_threshold}")
+            if poor_phase:
+                parts.append(f"phase_alignment {phase:.3f} < {profile.anchor_phase_threshold}")
+
+            return BehaviourDecision(
+                intent=BehaviourIntent.ANCHOR,
+                confidence=anchor_conf,
+                reason=f"ANCHOR: {'; '.join(parts)}" if parts else "ANCHOR: recovering, still below hysteresis threshold",
+                scores={
+                    "player_certainty": certainty,
+                    "repetition_stability": stability,
+                    "phase_alignment": phase or 0.0,
+                    "anchor_certainty_threshold": profile.anchor_certainty_threshold,
+                    "anchor_repetition_threshold": profile.anchor_repetition_threshold,
+                    "anchor_phase_threshold": profile.anchor_phase_threshold,
+                },
+                evaluated_at=snap.timestamp,
+            )
+
+        # Not already in ANCHOR — check entry conditions
+        low_certainty = certainty < profile.anchor_certainty_threshold
+        low_stability = stability < profile.anchor_repetition_threshold
+        poor_phase = (
+            phase is not None
+            and phase < profile.anchor_phase_threshold
+        )
+
+        if not (low_certainty or low_stability or poor_phase):
+            return None  # Everything is fine, no ANCHOR needed
+
+        # Enter ANCHOR
+        anchor_conf = 1.0 - max(
+            (profile.anchor_certainty_threshold - certainty) if low_certainty else 0,
+            (profile.anchor_repetition_threshold - stability) if low_stability else 0,
+            (profile.anchor_phase_threshold - (phase or 0)) if poor_phase else 0,
+        )
+        anchor_conf = max(0.0, min(1.0, anchor_conf))
+
+        parts: list[str] = []
+        if low_certainty:
+            parts.append(f"player_certainty {certainty:.3f} < {profile.anchor_certainty_threshold}")
+        if low_stability:
+            parts.append(f"repetition_stability {stability:.3f} < {profile.anchor_repetition_threshold}")
+        if poor_phase:
+            parts.append(f"phase_alignment {phase:.3f} < {profile.anchor_phase_threshold}")
+
+        return BehaviourDecision(
+            intent=BehaviourIntent.ANCHOR,
+            confidence=anchor_conf,
+            reason=f"ANCHOR: {'; '.join(parts)}",
+            scores={
+                "player_certainty": certainty,
+                "repetition_stability": stability,
+                "phase_alignment": phase or 0.0,
+                "anchor_certainty_threshold": profile.anchor_certainty_threshold,
+                "anchor_repetition_threshold": profile.anchor_repetition_threshold,
+                "anchor_phase_threshold": profile.anchor_phase_threshold,
+            },
+            evaluated_at=snap.timestamp,
+        )
+
+    # ------------------------------------------------------------------
+    # Feature BUILD logic
+    # ------------------------------------------------------------------
+
+    def _check_feature_build(self, snap) -> BehaviourDecision | None:
+        """Return BUILD if strength is rising and change_score is elevated.
+
+        Conditions:
+        * change_score >= build_change_threshold
+        * player_certainty >= build_certainty_threshold
+        * input_density is not chaotic (avoid building over frantic input)
+
+        Hysteresis: if already BUILD, require change_score to drop below
+        (threshold - hysteresis_margin) to exit.
+        """
+        profile = self.profile
+
+        change = snap.change_score
+        certainty = snap.player_certainty
+        density = snap.input_density
+
+        # Hysteresis: if already in BUILD, check exit threshold
+        if self.previous_intent == BehaviourIntent.BUILD:
+            exit_threshold = profile.build_change_threshold - profile.feature_hysteresis_margin
+            if change >= exit_threshold:
+                # Still building — stay in BUILD
+                return BehaviourDecision(
+                    intent=BehaviourIntent.BUILD,
+                    confidence=min(certainty, min(change / profile.build_change_threshold, 1.0)),
+                    reason=f"Feature BUILD (hold): change_score {change:.3f} within hysteresis band",
+                    scores={
+                        "change_score": change,
+                        "player_certainty": certainty,
+                        "input_density": density,
+                        "build_change_threshold": profile.build_change_threshold,
+                        "build_certainty_threshold": profile.build_certainty_threshold,
+                    },
+                    evaluated_at=snap.timestamp,
+                )
+            # Dropped below exit threshold — allow state transition
+            return None
+
+        # Not in BUILD — check entry thresholds
+        if change < profile.build_change_threshold:
+            return None
+        if certainty < profile.build_certainty_threshold:
+            return None
+        # Density inversion — don't BUILD if player is already too busy
+        if density >= profile.reduce_density_threshold:
+            return None
+
+        build_confidence = min(
+            certainty,
+            min(change / profile.build_change_threshold, 1.0),
+        )
+
+        return BehaviourDecision(
+            intent=BehaviourIntent.BUILD,
+            confidence=build_confidence,
+            reason=f"Feature BUILD: change_score {change:.3f} >= {profile.build_change_threshold}, "
+                   f"certainty {certainty:.3f} >= {profile.build_certainty_threshold}",
+            scores={
+                "change_score": change,
+                "player_certainty": certainty,
+                "input_density": density,
+                "build_change_threshold": profile.build_change_threshold,
+                "build_certainty_threshold": profile.build_certainty_threshold,
+            },
+            evaluated_at=snap.timestamp,
+        )
+
+    # ------------------------------------------------------------------
+    # Feature REDUCE (Density Inversion) logic
+    # ------------------------------------------------------------------
+
+    def _check_feature_reduce(self, snap) -> BehaviourDecision | None:
+        """Return REDUCE if input density is high (density inversion).
+
+        When the player is busy, the drummer should simplify rather
+        than match the complexity.  This is *musical restraint* — not panic.
+
+        Hysteresis: if already REDUCE, require density to drop below
+        (threshold - hysteresis_margin) to exit.
+        """
+        profile = self.profile
+
+        density = snap.input_density
+
+        # Hysteresis: if already in REDUCE, check exit threshold
+        if self.previous_intent == BehaviourIntent.REDUCE:
+            exit_threshold = profile.reduce_density_threshold - profile.feature_hysteresis_margin
+            if density >= exit_threshold:
+                # Still busy — stay in REDUCE
+                return BehaviourDecision(
+                    intent=BehaviourIntent.REDUCE,
+                    confidence=min(1.0, density / profile.reduce_density_threshold),
+                    reason=f"Feature REDUCE (hold): input_density {density:.3f} within hysteresis band",
+                    scores={
+                        "input_density": density,
+                        "reduce_density_threshold": profile.reduce_density_threshold,
+                        "player_certainty": snap.player_certainty,
+                    },
+                    evaluated_at=snap.timestamp,
+                )
+            # Density dropped enough — allow state transition
+            return None
+
+        # Not in REDUCE — check entry threshold
+        if density < profile.reduce_density_threshold:
+            return None
+
+        reduce_confidence = min(1.0, density / profile.reduce_density_threshold)
+
+        return BehaviourDecision(
+            intent=BehaviourIntent.REDUCE,
+            confidence=reduce_confidence,
+            reason=f"Feature REDUCE: input_density {density:.3f} >= "
+                   f"{profile.reduce_density_threshold} (density inversion — player too busy)",
+            scores={
+                "input_density": density,
+                "reduce_density_threshold": profile.reduce_density_threshold,
+                "player_certainty": snap.player_certainty,
+            },
+            evaluated_at=snap.timestamp,
+        )
+
+    # ------------------------------------------------------------------
+    # MAINTAIN — default bias
+    # ------------------------------------------------------------------
+
+    def _make_maintain(self, snap) -> BehaviourDecision:
+        """Return a MAINTAIN decision — the drummer's default bias."""
+        return BehaviourDecision(
+            intent=BehaviourIntent.MAINTAIN,
+            confidence=snap.player_certainty,
+            reason="Feature MAINTAIN: holding the pocket (default bias)",
+            scores={
+                "player_certainty": snap.player_certainty,
+                "repetition_stability": snap.repetition_stability,
+                "input_density": snap.input_density,
+                "change_score": snap.change_score,
+            },
+            evaluated_at=snap.timestamp,
+        )
+
+    # ------------------------------------------------------------------
+    # Intent change tracking
+    # ------------------------------------------------------------------
+
+    def _record_intent_change(self, new_intent: BehaviourIntent) -> None:
+        """Record the new intent and track same-intent streak."""
+        if new_intent != self.previous_intent:
+            self._same_intent_count = 0
+        else:
+            self._same_intent_count += 1
+        self.previous_intent = new_intent
