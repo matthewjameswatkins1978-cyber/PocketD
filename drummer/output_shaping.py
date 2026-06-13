@@ -11,6 +11,9 @@ Design contract
 * Instrument-aware: identifies kick, snare, hi_hat, ride, crash, toms.
 * Preserves time order (sorted by grid_position then bar_index).
 * Never crashes on unknown instruments.
+* Timing is preserved — shaping only alters velocity and articulation.
+* ``humanize_amount`` scales all velocity/articulation modifications
+  from 0.0 (pure machine grid) to 1.0 (full expression).
 """
 
 from __future__ import annotations
@@ -32,7 +35,15 @@ class OutputShapingConfig:
 
     All parameters have sensible defaults.  Tweak them to adjust how
     aggressively each intent shapes the output.
+
+    ``humanize_amount`` scales all velocity/articulation modifications.
+    0.0 = machine-tight (no changes).  1.0 = full expression.
     """
+
+    # Global scaling
+    humanize_amount: float = 1.0
+    """0.0 = machine-tight (no velocity/articulation changes).
+    1.0 = full expression.  0.25 = subtle."""
 
     # Reduce settings
     reduce_min_snare_velocity: int = 60
@@ -140,7 +151,6 @@ def _is_ghost(evt: GrooveEvent, config: OutputShapingConfig) -> bool:
 
 def _beat_in_bar(grid_position: int) -> int:
     """Return the beat number (1-4) for a 16th-note grid position."""
-    # 0->1, 4->2, 8->3, 12->4, 16 wraps to 0
     pos_in_bar = grid_position % 16
     beat_map = {0: 1, 4: 2, 8: 3, 12: 4}
     return beat_map.get(pos_in_bar, -1)
@@ -221,11 +231,14 @@ class BehaviourOutputShaper:
         return result
 
     # ------------------------------------------------------------------
-    # MAINTAIN — preserve the pocket
+    # MAINTAIN — preserve the pocket (machine-tight unless humanized)
     # ------------------------------------------------------------------
 
     def _shape_maintain(self, events: list[GrooveEvent]) -> list[GrooveEvent]:
-        """MAINTAIN leaves the groove mostly unchanged."""
+        """MAINTAIN leaves the groove mostly unchanged.
+
+        At ``humanize_amount == 0.0``, output is identical to input.
+        """
         return list(events)
 
     # ------------------------------------------------------------------
@@ -240,41 +253,30 @@ class BehaviourOutputShaper:
         for evt in events:
             # Remove ghost notes — but NEVER ghost-strip essential backbeat
             if cfg.reduce_strip_ghosts and _is_ghost(evt, cfg):
-                # Preserve snare backbeat even if low-velocity (ghost-like)
                 if _is_snare(evt):
                     beat = _beat_in_bar(evt.grid_position)
                     if cfg.reduce_preserve_strong_beats and beat in (2, 4) and _is_strong_beat(evt.grid_position):
-                        pass  # keep backbeat snare even if ghost-velocity
+                        pass
                     else:
                         continue
-                # Preserve kick on beat 1 even if ghost-like
                 elif _is_kick(evt):
                     if cfg.reduce_preserve_strong_beats and _is_strong_beat(evt.grid_position) and _beat_in_bar(evt.grid_position) == 1:
-                        pass  # keep beat-1 kick
+                        pass
                     else:
                         continue
                 else:
-                    continue  # remove ghost
+                    continue
 
-            # Remove low-velocity snare decorations (below threshold, not already ghost-stripped)
+            # Remove low-velocity snare decorations
             if _is_snare(evt) and evt.velocity < cfg.reduce_min_snare_velocity:
                 beat = _beat_in_bar(evt.grid_position)
-                # Always preserve snare on beats 2 and 4
                 if not (cfg.reduce_preserve_strong_beats and beat in (2, 4) and _is_strong_beat(evt.grid_position)):
-                    continue  # low-velocity snare, not essential backbeat → remove
+                    continue
 
             # Thin 16th-note hi-hats to 8th notes
             if cfg.reduce_thin_hats and _is_hat(evt):
                 if not _is_eighth_note(evt.grid_position):
-                    continue  # remove off-8th hats
-
-            # Preserve kick on beat 1 always
-            if _is_kick(evt):
-                beat = _beat_in_bar(evt.grid_position)
-                if cfg.reduce_preserve_strong_beats and beat == 1 and _is_strong_beat(evt.grid_position):
-                    pass  # always keep beat 1 kick
-                # Extra kicks not on strong beats may be removed if we want
-                # For now, keep all kicks — safe default
+                    continue
 
             result.append(evt)
 
@@ -285,8 +287,14 @@ class BehaviourOutputShaper:
     # ------------------------------------------------------------------
 
     def _shape_anchor(self, events: list[GrooveEvent]) -> list[GrooveEvent]:
-        """ANCHOR strips decorations and simplifies to a clear pulse."""
+        """ANCHOR strips decorations and simplifies to a clear pulse.
+
+        At ``humanize_amount == 0.0``, only structural simplification
+        applies (no velocity changes).  At 1.0, full velocity pull toward
+        anchor_target_velocity.
+        """
         cfg = self.config
+        amount = cfg.humanize_amount
         result: list[GrooveEvent] = []
 
         for evt in events:
@@ -297,7 +305,6 @@ class BehaviourOutputShaper:
             # Strip syncopated kick decorations
             if cfg.anchor_strip_syncopated and _is_kick(evt):
                 beat = _beat_in_bar(evt.grid_position)
-                # Keep only kicks on beats 1 and 3 (strong beats)
                 if not _is_strong_beat(evt.grid_position):
                     continue
                 if beat not in (1, 3):
@@ -311,29 +318,27 @@ class BehaviourOutputShaper:
                 if beat not in (2, 4):
                     continue
 
-            # Simplify hi-hats to quarter or 8th notes
+            # Simplify hi-hats to quarter notes
             if cfg.anchor_simplify_hats and _is_hat(evt):
                 if not _is_eighth_note(evt.grid_position):
                     continue
-                # Prefer quarter notes — remove off-beat 8th hats
                 if not _is_strong_beat(evt.grid_position):
                     continue
 
-            # Reduce velocity variation
-            if cfg.anchor_reduce_velocity_variation:
+            # Reduce velocity variation (scaled by humanize_amount)
+            if cfg.anchor_reduce_velocity_variation and amount > 0.0:
                 target = cfg.anchor_target_velocity
                 current = evt.velocity
-                # Pull toward target (blend 50%)
-                new_vel = int(current + (target - current) * 0.5)
+                # Pull toward target, scaled by amount
+                blend = 0.5 * amount
+                new_vel = int(current + (target - current) * blend)
                 new_vel = max(1, min(127, new_vel))
                 if new_vel != current:
                     evt = evt.copy_with(velocity=new_vel)
 
             result.append(evt)
 
-        # Ensure minimum anchor pulse: if kick on 1 is missing, add it
-        # if kick on 3 is missing, add a simple one
-        # This is done by checking what survives the strip
+        # Ensure minimum anchor pulse
         has_beat1_kick = any(
             _is_kick(e) and _is_strong_beat(e.grid_position)
             and _beat_in_bar(e.grid_position) == 1
@@ -355,7 +360,6 @@ class BehaviourOutputShaper:
             for e in result
         )
 
-        # Determine bar/time from existing events
         bar_index = events[0].bar_index if events else 0
 
         if not has_beat1_kick:
@@ -386,7 +390,6 @@ class BehaviourOutputShaper:
                 source_role="main",
             ))
 
-        # Add basic quarter-note hats if no hats remain
         has_hats = any(_is_hat(e) for e in result)
         if not has_hats:
             for pos in (0, 4, 8, 12):
@@ -403,17 +406,24 @@ class BehaviourOutputShaper:
     # ------------------------------------------------------------------
 
     def _shape_build(self, events: list[GrooveEvent]) -> list[GrooveEvent]:
-        """BUILD boosts velocity and optionally opens hats."""
+        """BUILD boosts velocity and optionally opens hats.
+
+        Velocity boost is scaled by ``humanize_amount``.  At 0.0,
+        BUILD adds no velocity (pure machine grid).
+        """
         cfg = self.config
+        amount = cfg.humanize_amount
         result: list[GrooveEvent] = []
 
-        for evt in events:
-            # Boost velocity (clamped)
-            new_vel = min(cfg.build_max_velocity, evt.velocity + cfg.build_velocity_boost)
-            evt = evt.copy_with(velocity=new_vel)
+        boost = int(cfg.build_velocity_boost * amount)
 
-            # Open hats if configured
-            if cfg.build_open_hats and _is_hat(evt):
+        for evt in events:
+            if boost > 0:
+                new_vel = min(cfg.build_max_velocity, evt.velocity + boost)
+                evt = evt.copy_with(velocity=new_vel)
+
+            # Open hats if configured and amount > 0
+            if cfg.build_open_hats and amount > 0.0 and _is_hat(evt):
                 if evt.articulation in ("default", "closed"):
                     evt = evt.copy_with(articulation="open")
 
@@ -426,12 +436,20 @@ class BehaviourOutputShaper:
     # ------------------------------------------------------------------
 
     def _shape_enter(self, events: list[GrooveEvent]) -> list[GrooveEvent]:
-        """ENTER softens velocities for a controlled entry."""
+        """ENTER softens velocities for a controlled entry.
+
+        Velocity scaling is interpolated between 1.0 (raw) at
+        ``humanize_amount == 0.0`` and ``enter_soft_scale`` at 1.0.
+        """
         cfg = self.config
+        amount = cfg.humanize_amount
         result: list[GrooveEvent] = []
 
+        # Interpolate between 1.0 (raw) and enter_soft_scale
+        effective_scale = 1.0 - (1.0 - cfg.enter_soft_scale) * amount
+
         for evt in events:
-            new_vel = int(evt.velocity * cfg.enter_soft_scale)
+            new_vel = int(evt.velocity * effective_scale)
             new_vel = max(1, min(cfg.enter_velocity_cap, new_vel))
             evt = evt.copy_with(velocity=new_vel)
             result.append(evt)

@@ -15,7 +15,11 @@ import time
 from collections import deque
 
 import numpy as np
-import sounddevice as sd
+
+try:
+    import sounddevice as sd
+except ImportError:
+    sd = None
 
 from midi_out import MidiOut
 from onset_detector import detect_onsets

@@ -758,6 +758,9 @@ class TestFeatureBackwardCompat:
         assert p.enter_confirmation_snapshots == 3
         assert p.build_change_threshold == 0.20
         assert p.build_certainty_threshold == 0.55
+        assert p.build_repetition_threshold == 0.65
+        assert p.build_phase_threshold == 0.55
+        assert p.build_max_density_without_phrase == 0.80
         assert p.reduce_density_threshold == 0.75
         assert p.anchor_certainty_threshold == 0.40
         assert p.anchor_repetition_threshold == 0.35

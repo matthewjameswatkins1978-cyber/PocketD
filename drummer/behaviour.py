@@ -42,6 +42,24 @@ class BehaviourIntent(str, Enum):
     DROP = "drop"
 
 
+def parse_behaviour_intent(value: str) -> BehaviourIntent:
+    """Parse a string into a BehaviourIntent, case-insensitively.
+
+    Accepts both enum names (``"REDUCE"``) and enum values
+    (``"reduce"``).  Raises ``ValueError`` with a helpful message
+    listing valid options if no match is found.
+    """
+    v = value.strip().lower()
+    for member in BehaviourIntent:
+        if v == member.value.lower() or v == member.name.lower():
+            return member
+    valid = [f"{m.name} ({m.value})" for m in BehaviourIntent]
+    raise ValueError(
+        f"'{value}' is not a valid BehaviourIntent. "
+        f"Valid options: {', '.join(valid)}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # DrummerProfile — behaviour threshold tuning
 # ---------------------------------------------------------------------------
@@ -91,6 +109,9 @@ class DrummerProfile:
     enter_confirmation_snapshots: int = 3
     build_change_threshold: float = 0.20
     build_certainty_threshold: float = 0.55
+    build_repetition_threshold: float = 0.65
+    build_phase_threshold: float = 0.55
+    build_max_density_without_phrase: float = 0.80
     reduce_density_threshold: float = 0.75
     anchor_certainty_threshold: float = 0.40
     anchor_repetition_threshold: float = 0.35
@@ -133,6 +154,9 @@ ConservativePocketDrummer = DrummerProfile(
     enter_confirmation_snapshots=3,
     build_change_threshold=0.20,
     build_certainty_threshold=0.55,
+    build_repetition_threshold=0.65,
+    build_phase_threshold=0.55,
+    build_max_density_without_phrase=0.80,
     reduce_density_threshold=0.75,
     anchor_certainty_threshold=0.40,
     anchor_repetition_threshold=0.35,
@@ -1041,23 +1065,31 @@ class FeatureDrivenBehaviourEngine:
             return self._evaluate_entry(snapshot, pulse_state, bar_state)
 
         # 3. Priority-ordered dynamic decisions after entry
-        # ANCHOR — protect the pocket when player is uncertain
+        # ANCHOR — protect the pocket when player is uncertain (highest)
         anchor = self._check_anchor(snapshot)
         if anchor is not None:
             self._record_intent_change(anchor.intent)
             return anchor
 
-        # BUILD — rising energy and change
+        # REDUCE — density inversion (player too busy)
+        # Comes BEFORE BUILD because the drummer should not reward
+        # frantic density with more complexity. BUILD can still
+        # override REDUCE, but only when all controlled-build gates pass.
+        reduce_ = self._check_feature_reduce(snapshot)
+        if reduce_ is not None:
+            # Allow BUILD to override REDUCE when controlled-build is clear
+            build = self._check_feature_build(snapshot)
+            if build is not None and build.confidence > reduce_.confidence:
+                self._record_intent_change(build.intent)
+                return build
+            self._record_intent_change(reduce_.intent)
+            return reduce_
+
+        # BUILD — rising energy and change (only when REDUCE didn't fire)
         build = self._check_feature_build(snapshot)
         if build is not None:
             self._record_intent_change(build.intent)
             return build
-
-        # REDUCE — density inversion (player too busy)
-        reduce_ = self._check_feature_reduce(snapshot)
-        if reduce_ is not None:
-            self._record_intent_change(reduce_.intent)
-            return reduce_
 
         # Default: MAINTAIN — hold the pocket
         maintain = self._make_maintain(snapshot)
@@ -1305,12 +1337,18 @@ class FeatureDrivenBehaviourEngine:
     # ------------------------------------------------------------------
 
     def _check_feature_build(self, snap) -> BehaviourDecision | None:
-        """Return BUILD if strength is rising and change_score is elevated.
+        """Return BUILD if strength is rising in a controlled, intentional way.
+
+        BUILD is NOT about raw energy — it's about controlled, musical lift.
+        The drummer should not reward frantic density with more complexity.
 
         Conditions:
         * change_score >= build_change_threshold
         * player_certainty >= build_certainty_threshold
-        * input_density is not chaotic (avoid building over frantic input)
+        * repetition_stability >= build_repetition_threshold (controlled playing)
+        * phase_alignment >= build_phase_threshold (if provided)
+        * input_density is not chaotic: either below build_max_density_without_phrase,
+          OR change_score is clearly dominant (controlled build through density)
 
         Hysteresis: if already BUILD, require change_score to drop below
         (threshold - hysteresis_margin) to exit.
@@ -1320,6 +1358,8 @@ class FeatureDrivenBehaviourEngine:
         change = snap.change_score
         certainty = snap.player_certainty
         density = snap.input_density
+        stability = snap.repetition_stability
+        phase = snap.phase_alignment
 
         # Hysteresis: if already in BUILD, check exit threshold
         if self.previous_intent == BehaviourIntent.BUILD:
@@ -1343,30 +1383,55 @@ class FeatureDrivenBehaviourEngine:
             return None
 
         # Not in BUILD — check entry thresholds
+
+        # 1. Change score must be elevated
         if change < profile.build_change_threshold:
             return None
+
+        # 2. Player certainty must be decent
         if certainty < profile.build_certainty_threshold:
             return None
-        # Density inversion — don't BUILD if player is already too busy
-        if density >= profile.reduce_density_threshold:
+
+        # 3. Repetition must be controlled — erratic playing blocks BUILD
+        if stability < profile.build_repetition_threshold:
             return None
+
+        # 4. Phase alignment must be reasonable (if provided)
+        if phase is not None and phase < profile.build_phase_threshold:
+            return None
+
+        # 5. Density gating:
+        #    - If density is below the "frantic" ceiling, BUILD is allowed
+        #    - If density is high but change_score is clearly dominant
+        #      (e.g. 2x the build threshold), BUILD can override density
+        #    - Otherwise, block BUILD (let REDUCE handle it)
+        if density >= profile.build_max_density_without_phrase:
+            # High density — require strong controlled-build evidence
+            if change < profile.build_change_threshold * 1.5:
+                return None  # Not enough build evidence to override density
 
         build_confidence = min(
             certainty,
             min(change / profile.build_change_threshold, 1.0),
+            stability,
         )
 
         return BehaviourDecision(
             intent=BehaviourIntent.BUILD,
             confidence=build_confidence,
             reason=f"Feature BUILD: change_score {change:.3f} >= {profile.build_change_threshold}, "
-                   f"certainty {certainty:.3f} >= {profile.build_certainty_threshold}",
+                   f"certainty {certainty:.3f} >= {profile.build_certainty_threshold}, "
+                   f"stability {stability:.3f} >= {profile.build_repetition_threshold}",
             scores={
                 "change_score": change,
                 "player_certainty": certainty,
                 "input_density": density,
+                "repetition_stability": stability,
+                "phase_alignment": phase or 0.0,
                 "build_change_threshold": profile.build_change_threshold,
                 "build_certainty_threshold": profile.build_certainty_threshold,
+                "build_repetition_threshold": profile.build_repetition_threshold,
+                "build_phase_threshold": profile.build_phase_threshold,
             },
             evaluated_at=snap.timestamp,
         )

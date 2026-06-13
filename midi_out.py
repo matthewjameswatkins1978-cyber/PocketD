@@ -83,6 +83,12 @@ class _WinmmPort:
         self._out.note_on(note, velocity, channel=DRUM_CHANNEL)
         self._out.note_off(note, channel=DRUM_CHANNEL)
 
+    def note_on(self, note: int, velocity: int) -> None:
+        self._out.note_on(note, velocity, channel=DRUM_CHANNEL)
+
+    def note_off(self, note: int) -> None:
+        self._out.note_off(note, channel=DRUM_CHANNEL)
+
     def close(self) -> None:
         self._out.close()
 
@@ -97,6 +103,16 @@ class _MidoPort:
         self._port.send(
             _mido.Message("note_on", note=note, velocity=velocity, channel=DRUM_CHANNEL)
         )
+        self._port.send(
+            _mido.Message("note_off", note=note, velocity=0, channel=DRUM_CHANNEL)
+        )
+
+    def note_on(self, note: int, velocity: int) -> None:
+        self._port.send(
+            _mido.Message("note_on", note=note, velocity=velocity, channel=DRUM_CHANNEL)
+        )
+
+    def note_off(self, note: int) -> None:
         self._port.send(
             _mido.Message("note_off", note=note, velocity=0, channel=DRUM_CHANNEL)
         )
@@ -140,6 +156,18 @@ class MidiOut:
         if self._port is None:
             raise RuntimeError("MIDI port not open")
         self._port.send_note(note, velocity)
+
+    def note_on(self, note: int, velocity: int = DEFAULT_VELOCITY) -> None:
+        """Send note_on only (no automatic note_off)."""
+        if self._port is None:
+            raise RuntimeError("MIDI port not open")
+        self._port.note_on(note, velocity)
+
+    def note_off(self, note: int) -> None:
+        """Send note_off."""
+        if self._port is None:
+            raise RuntimeError("MIDI port not open")
+        self._port.note_off(note)
 
     def send_kick(self, velocity: int = DEFAULT_VELOCITY) -> None:
         self.send_note(KICK, velocity)
