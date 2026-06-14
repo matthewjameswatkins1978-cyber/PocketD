@@ -116,6 +116,21 @@ def _warn(code: str, message: str, bar_index: int | None = None, **details) -> M
 
 
 # ---------------------------------------------------------------------------
+# Helper for evaluation context
+# ---------------------------------------------------------------------------
+
+
+def _evaluation_intent(diag: dict) -> str:
+    """Return the intent that should be used for arrangement evaluation.
+
+    Prefers ``rendered_intent`` (the intent that actually drove output
+    shaping) over raw pipeline ``intent``. Falls back to ``intent``
+    only when ``rendered_intent`` is absent (backward compatibility).
+    """
+    return diag.get("rendered_intent", diag.get("intent", ""))
+
+
+# ---------------------------------------------------------------------------
 # Core arrangement checks
 # ---------------------------------------------------------------------------
 
@@ -302,8 +317,8 @@ def _check_same_beat_after_change(diagnostics: list[dict]) -> list[MusicalSanity
 
     for i in range(1, n):
         prev = diagnostics[i - 1]
-        prev_intent = prev.get("intent", "")
-        curr_intent = diagnostics[i].get("intent", "")
+        prev_intent = _evaluation_intent(prev)
+        curr_intent = _evaluation_intent(diagnostics[i])
 
         if prev_intent != curr_intent and curr_intent != "final_bail":
             # Compare event-density buckets, not full signatures (which include intent)

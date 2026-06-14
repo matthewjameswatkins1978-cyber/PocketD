@@ -19,9 +19,8 @@ import json
 import os
 import sys
 from collections import Counter
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
 
 # ---------------------------------------------------------------------------
 # Ensure project root is importable
@@ -31,22 +30,17 @@ _PROJECT_ROOT = Path(__file__).resolve().parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from drummer.playtest_feedback import (
-    list_playtest_scenarios,
-    get_scenario_variations,
-    run_playtest_scenario,
-    PlaytestScenario,
-    PlaytestDiagnosticsSummary,
-    PlaytestFeedbackEntry,
-)
+from drummer.arrangement_sanity import check_arrangement_sanity
+from drummer.musical_evaluation import evaluate_musical_usefulness
 from drummer.musical_sanity import (
-    check_musical_sanity,
-    check_scenario_sanity,
     MusicalSanityReport,
-    MusicalSanityIssue,
 )
-from drummer.presets import DrummerPreset
-
+from drummer.playtest_feedback import (
+    PlaytestDiagnosticsSummary,
+    get_scenario_variations,
+    list_playtest_scenarios,
+    run_playtest_scenario,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -77,6 +71,11 @@ class SelfPlayRun:
     summary_first_enter_bar: int | None = None
     summary_confidence_peak: float = 0.0
     summary_contracts_passed: bool = True
+    evaluation_score: int = 100
+    evaluation_grade: str = "excellent"
+    safe_for_ear_testing: bool = True
+    total_deductions: int = 0
+    evaluation_deductions: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -102,17 +101,23 @@ class DeterministicCaseGenerator:
         """
         # Use a simple deterministic hash
         combined = self._seed * 1000003 + run_index * 7919
-        rng_state = (combined * 6364136223846793005 + 1442695040888963407) & 0xFFFFFFFFFFFFFFFF
+        rng_state = (
+            combined * 6364136223846793005 + 1442695040888963407
+        ) & 0xFFFFFFFFFFFFFFFF
 
         # Pick scenario
-        sc_idx = (rng_state % len(self._scenarios))
+        sc_idx = rng_state % len(self._scenarios)
         scenario = self._scenarios[sc_idx]
-        rng_state = (rng_state * 6364136223846793005 + 1442695040888963407) & 0xFFFFFFFFFFFFFFFF
+        rng_state = (
+            rng_state * 6364136223846793005 + 1442695040888963407
+        ) & 0xFFFFFFFFFFFFFFFF
 
         # Pick preset
         preset_idx = rng_state % len(self._presets)
         preset = self._presets[preset_idx]
-        rng_state = (rng_state * 6364136223846793005 + 1442695040888963407) & 0xFFFFFFFFFFFFFFFF
+        rng_state = (
+            rng_state * 6364136223846793005 + 1442695040888963407
+        ) & 0xFFFFFFFFFFFFFFFF
 
         # Pick variation — need to know the variations for the scenario
         # This method is called after scenarios are resolved.
@@ -252,7 +257,8 @@ def _build_failure_counts_by_preset(runs: list[SelfPlayRun]) -> dict[str, int]:
 
 
 def _find_representative_failures(
-    runs: list[SelfPlayRun], max_examples: int = 10,
+    runs: list[SelfPlayRun],
+    max_examples: int = 10,
 ) -> list[tuple[SelfPlayRun, dict]]:
     """Find representative failure examples, one per unique issue code."""
     seen_codes: set[str] = set()
@@ -273,6 +279,154 @@ def _rerun_command(run: SelfPlayRun) -> str:
     )
 
 
+def _aggregate_deductions(
+    runs: list[SelfPlayRun],
+) -> tuple[list[dict], list[dict]]:
+    """Aggregate deduction codes across all runs.
+
+    Returns (top_all_codes, top_direct_codes) where each is a list of
+    dicts sorted by total_points descending:
+        {"code": str, "runs": int, "total_points": int}
+    """
+    code_counter: Counter = Counter()  # code -> run count
+    code_points: dict[str, int] = {}    # code -> total points
+    direct_code_counter: Counter = Counter()
+    direct_code_points: dict[str, int] = {}
+
+    for r in runs:
+        seen: set[str] = set()
+        seen_direct: set[str] = set()
+        for d in r.evaluation_deductions:
+            code = d.get("code", "UNKNOWN")
+            source = d.get("source", "")
+            points = d.get("points", 0)
+            if code not in seen:
+                code_counter[code] += 1
+                seen.add(code)
+            code_points[code] = code_points.get(code, 0) + points
+            if source == "direct_evaluation":
+                if code not in seen_direct:
+                    direct_code_counter[code] += 1
+                    seen_direct.add(code)
+                direct_code_points[code] = direct_code_points.get(code, 0) + points
+
+    # Build ranked lists
+    all_codes = [
+        {"code": code, "runs": code_counter[code], "total_points": code_points.get(code, 0)}
+        for code in code_counter
+    ]
+    all_codes.sort(key=lambda x: -abs(x["total_points"]))
+
+    direct_codes = [
+        {"code": code, "runs": direct_code_counter[code], "total_points": direct_code_points.get(code, 0)}
+        for code in direct_code_counter
+    ]
+    direct_codes.sort(key=lambda x: -abs(x["total_points"]))
+
+    return all_codes, direct_codes
+
+
+def _build_musical_evaluation_stats(
+    runs: list[SelfPlayRun],
+    ear_test_threshold: int = 90,
+) -> dict:
+    """Aggregate musical evaluation statistics across all runs.
+
+    Parameters
+    ----------
+    ear_test_threshold : int
+        Batch-level readiness threshold (default 90).
+        Ready = zero contract errors, no do_not_ear_test runs,
+        AND average score >= threshold.
+    """
+    scores = [r.evaluation_score for r in runs]
+    if not scores:
+        return {
+            "average_score": 0.0,
+            "lowest_score": 0,
+            "runs_below_ear_test_threshold": 0,
+            "runs_below_75": 0,
+            "do_not_ear_test_count": 0,
+            "top_deduction_codes": [],
+            "top_direct_deductions": [],
+            "ear_test_threshold": ear_test_threshold,
+            "ready_for_ear_testing": False,
+        }
+
+    n = len(scores)
+    avg_score = sum(scores) / n
+    lowest = min(scores)
+    below_ear_test = sum(1 for r in runs if not r.safe_for_ear_testing)
+    below_75 = sum(1 for s in scores if s < 75)
+    do_not_test_count = sum(1 for r in runs if r.evaluation_grade == "do_not_ear_test")
+
+    # Aggregate deduction codes properly
+    top_deduction_codes, top_direct_deductions = _aggregate_deductions(runs)
+
+    # Determine readiness:
+    # zero contract errors, no do_not_ear_test runs, AND average score >= threshold
+    total_contract_errors = sum(r.error_count for r in runs)
+    ready = (
+        total_contract_errors == 0
+        and do_not_test_count == 0
+        and avg_score >= ear_test_threshold
+    )
+
+    # Weakest scenarios/presets by average score
+    scenario_scores: dict[str, list[int]] = {}
+    preset_scores: dict[str, list[int]] = {}
+    for r in runs:
+        scenario_scores.setdefault(r.scenario, []).append(r.evaluation_score)
+        preset_scores.setdefault(r.preset, []).append(r.evaluation_score)
+
+    weakest_scenarios = (
+        sorted(
+            [(sc, sum(s) / len(s)) for sc, s in scenario_scores.items()],
+            key=lambda x: x[1],
+        )[:3]
+        if scenario_scores
+        else []
+    )
+    weakest_presets = (
+        sorted(
+            [(pr, sum(s) / len(s)) for pr, s in preset_scores.items()],
+            key=lambda x: x[1],
+        )[:3]
+        if preset_scores
+        else []
+    )
+
+    return {
+        "average_score": round(avg_score, 1),
+        "lowest_score": lowest,
+        "runs_below_ear_test_threshold": below_ear_test,
+        "runs_below_75": below_75,
+        "do_not_ear_test_count": do_not_test_count,
+        "top_deduction_codes": top_deduction_codes,
+        "top_direct_deductions": top_direct_deductions,
+        "weakest_scenarios": weakest_scenarios,
+        "weakest_presets": weakest_presets,
+        "ear_test_threshold": ear_test_threshold,
+        "ready_for_ear_testing": ready,
+    }
+
+
+def _format_deduction_list(
+    deduction_list: list[dict],
+    max_items: int = 5,
+) -> list[str]:
+    """Format a deduction aggregation list into bullet-point lines."""
+    lines: list[str] = []
+    for item in deduction_list[:max_items]:
+        code = item["code"]
+        runs = item["runs"]
+        points = item["total_points"]
+        lines.append(f"  - {code}: {runs} {'run' if runs == 1 else 'runs'}, {abs(points)} points")
+    if not deduction_list:
+        lines.append("  (none)")
+    return lines
+
+
 # ---------------------------------------------------------------------------
 # Markdown report
 # ---------------------------------------------------------------------------
@@ -287,6 +441,7 @@ def write_markdown_report(
     preset_choice: str,
     output_dir: str,
     total_runs: int,
+    ear_test_threshold: int = 90,
 ) -> None:
     total = len(runs)
     passed = sum(1 for r in runs if r.passed)
@@ -298,10 +453,11 @@ def write_markdown_report(
     scenario_fails = _build_failure_counts_by_scenario(runs)
     preset_fails = _build_failure_counts_by_preset(runs)
     examples = _find_representative_failures(runs)
+    eval_stats = _build_musical_evaluation_stats(runs, ear_test_threshold)
 
     lines: list[str] = []
     lines.append("# Pocket Drummer Self-Play Sanity Report\n")
-    lines.append(f"## Run Settings\n")
+    lines.append("## Run Settings\n")
     lines.append(f"- Command: `{command}`")
     lines.append(f"- Seed: `{seed}`")
     lines.append(f"- Runs: `{total}`")
@@ -310,13 +466,40 @@ def write_markdown_report(
     lines.append(f"- Output: `{output_dir}`")
     lines.append("")
 
-    lines.append("## Results\n")
+    lines.append("## Sanity Result\n")
     lines.append(f"- Total runs: {total}")
     lines.append(f"- Passed: {passed}")
     lines.append(f"- Failed: {failed}")
     lines.append(f"- Pass rate: {pass_rate:.1f}%")
     lines.append(f"- Total errors: {total_errors}")
     lines.append(f"- Total warnings: {total_warnings}")
+    lines.append("")
+
+    lines.append("## Musical Evaluation\n")
+    lines.append(f"- Ear-test threshold: {eval_stats['ear_test_threshold']}")
+    lines.append(f"- Average score: {eval_stats['average_score']}")
+    lines.append(f"- Lowest score: {eval_stats['lowest_score']}")
+    lines.append(
+        f"- Runs below ear-test threshold: {eval_stats['runs_below_ear_test_threshold']}"
+    )
+    lines.append(f"- Runs below 75: {eval_stats['runs_below_75']}")
+    lines.append(f"- Do not ear test count: {eval_stats['do_not_ear_test_count']}")
+    lines.append("- Top deduction codes:")
+    lines.extend(_format_deduction_list(eval_stats["top_deduction_codes"], 10))
+    lines.append("- Top direct deduction codes:")
+    lines.extend(_format_deduction_list(eval_stats["top_direct_deductions"], 5))
+    if eval_stats["weakest_scenarios"]:
+        weakest_sc_str = "; ".join(
+            f"{sc}: {avg:.1f}" for sc, avg in eval_stats["weakest_scenarios"]
+        )
+        lines.append(f"- Weakest scenarios: {weakest_sc_str}")
+    if eval_stats["weakest_presets"]:
+        weakest_pr_str = "; ".join(
+            f"{pr}: {avg:.1f}" for pr, avg in eval_stats["weakest_presets"]
+        )
+        lines.append(f"- Weakest presets: {weakest_pr_str}")
+    ready_str = "YES" if eval_stats["ready_for_ear_testing"] else "NO"
+    lines.append(f"- Ready for ear testing: {ready_str}")
     lines.append("")
 
     lines.append("## Top Issue Codes\n")
@@ -365,10 +548,10 @@ def write_markdown_report(
     lines.append("")
 
     lines.append("## Reproduction\n")
-    lines.append(f"To reproduce a specific run:")
-    lines.append(f"```")
+    lines.append("To reproduce a specific run:")
+    lines.append("```")
     lines.append(f"python demo_self_play_sanity.py --seed {seed} --runs {total}")
-    lines.append(f"```")
+    lines.append("```")
     lines.append("")
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -391,6 +574,7 @@ def write_json_summary(
     preset_choice: str,
     output_dir: str,
     output_files: dict[str, str],
+    ear_test_threshold: int = 90,
 ) -> None:
     total = len(runs)
     passed = sum(1 for r in runs if r.passed)
@@ -402,6 +586,7 @@ def write_json_summary(
     scenario_fails = _build_failure_counts_by_scenario(runs)
     preset_fails = _build_failure_counts_by_preset(runs)
     examples = _find_representative_failures(runs)
+    eval_stats = _build_musical_evaluation_stats(runs, ear_test_threshold)
 
     summary = {
         "command": command,
@@ -434,6 +619,27 @@ def write_json_summary(
             }
             for r, issue in examples
         ],
+        "musical_evaluation": {
+            "ear_test_threshold": eval_stats["ear_test_threshold"],
+            "average_score": eval_stats["average_score"],
+            "lowest_score": eval_stats["lowest_score"],
+            "runs_below_ear_test_threshold": eval_stats[
+                "runs_below_ear_test_threshold"
+            ],
+            "runs_below_75": eval_stats["runs_below_75"],
+            "do_not_ear_test_count": eval_stats["do_not_ear_test_count"],
+            "top_deduction_codes": eval_stats["top_deduction_codes"],
+            "top_direct_deductions": eval_stats["top_direct_deductions"],
+            "weakest_scenarios": [
+                {"scenario": sc, "average_score": avg}
+                for sc, avg in eval_stats["weakest_scenarios"]
+            ],
+            "weakest_presets": [
+                {"preset": pr, "average_score": avg}
+                for pr, avg in eval_stats["weakest_presets"]
+            ],
+            "ready_for_ear_testing": eval_stats["ready_for_ear_testing"],
+        },
         "output_files": output_files,
     }
 
@@ -447,6 +653,57 @@ def write_json_summary(
 # Lucy-readable brief
 # ---------------------------------------------------------------------------
 
+_DEDUCTION_ACTION_MAP = {
+    "STATIC_SECTION_6_PLUS": "Fix repeated/static section behaviour — long runs of near-identical patterns after builds.",
+    "STATIC_SECTION_4_PLUS": "Reduce repeated same-pattern bars after state changes.",
+    "BUILD_WITH_NO_ARRIVAL": "Improve build payoff — builds should lead to a musical arrival, not collapse flat.",
+    "SCENARIO_LOOP_RESTART": "Ensure scenarios end cleanly after FINAL_BAIL — no resumed output after the final cue.",
+    "SCENARIO_PURPOSE_VIOLATION": "Fix scenario purpose — ENTER scenarios should not produce final-cue restarts.",
+    "GESTURE_WINDOW": "Reduce crash clustering — avoid multiple crashes in a 2-bar window.",
+    "INTENT_CHANGE_NO_PATTERN_CHANGE": "Ensure intent changes actually change the output pattern.",
+    "NO_PHRASE_MOVEMENT": "Add subtle phrase movement during long stable sections.",
+    "MUSICAL_SANITY_ERRORS": "Fix musical sanity contract violations first.",
+    "ARRANGEMENT_SANITY_ERRORS": "Fix arrangement sanity contract violations first.",
+    "DOUBLE_FINAL_CRASH": "Fix double final crash — ending cue should be a single clear gesture.",
+    "REPEATED_ENDING_CUE": "Fix repeated ending cue — FINAL_BAIL should appear once only.",
+    "BAIL_NOT_SILENT": "Fix BAIL section — must produce exactly zero events.",
+    "ENTER_SOFT_CRASH": "Fix ENTER_SOFT — remove crash from soft entry.",
+    "DROP_CRASH": "Fix DROP — remove crash from drop section.",
+    "ANCHOR_CRASH": "Fix ANCHOR — reduce crash in anchor events.",
+    "ENTER_SOFT_ISOLATED_KICK": "Fix ENTER_SOFT — remove isolated kick in soft entry.",
+    "BUILD_WITH_NO_PAYOFF": "Fix arrangement build payoff — build must lead to arrival.",
+    "STATIC_DROP_TOO_LONG": "Fix static drop — vary drop/reduce patterns to stay musical.",
+    "ISOLATED_KICK_AFTER_DROP": "Fix isolated kick after drop — a lone kick after drop sounds like a mistake.",
+    "BUILD_TOO_ABRUPT_TO_DROP": "Fix build-to-drop transition — add REDUCE phase between BUILD and DROP.",
+    "SAME_BEAT_AFTER_CHANGE": "Fix same-beat after change — ensure state changes actually change the output.",
+    "LATE_ENTER_THEN_IMMEDIATE_BUILD": "Fix late enter — allow the drummer to settle before building.",
+}
+
+_DEFAULT_ACTION = "Do not ear test yet. Review the top deduction codes and address the underlying issues first."
+
+
+def _suggested_next_action(eval_stats: dict) -> list[str]:
+    """Generate suggested next action lines based on musical evaluation stats."""
+    if eval_stats["ready_for_ear_testing"]:
+        return ["- No issues found. Ear testing is ready."]
+
+    lines: list[str] = []
+    lines.append("- Do not ear test yet. The following issues need attention first.\n")
+
+    top_codes = eval_stats.get("top_deduction_codes", [])
+    if top_codes:
+        lines.append("  Top priorities:")
+        for item in top_codes[:3]:
+            code = item["code"]
+            action = _DEDUCTION_ACTION_MAP.get(code, _DEFAULT_ACTION)
+            lines.append(f"  - {code}: {action}")
+    else:
+        lines.append(f"  {_DEFAULT_ACTION}")
+
+    lines.append("")
+    lines.append("- After fixing, re-run with the same parameters and compare.")
+    return lines
+
 
 def write_lucy_brief(
     path: str,
@@ -456,6 +713,7 @@ def write_lucy_brief(
     scenario_choice: str,
     preset_choice: str,
     output_dir: str,
+    ear_test_threshold: int = 90,
 ) -> None:
     total = len(runs)
     passed = sum(1 for r in runs if r.passed)
@@ -467,6 +725,7 @@ def write_lucy_brief(
     scenario_fails = _build_failure_counts_by_scenario(runs)
     preset_fails = _build_failure_counts_by_preset(runs)
     examples = _find_representative_failures(runs, _TOP_N_REPRESENTATIVE)
+    eval_stats = _build_musical_evaluation_stats(runs, ear_test_threshold)
 
     lines: list[str] = []
     lines.append("# Pocket Drummer Self-Play Sanity Brief\n")
@@ -475,12 +734,12 @@ def write_lucy_brief(
     lines.append("")
 
     lines.append("## Command Run\n")
-    lines.append(f"```")
+    lines.append("```")
     lines.append(f"{command}")
-    lines.append(f"```")
+    lines.append("```")
     lines.append("")
 
-    lines.append("## Overall Result\n")
+    lines.append("## Sanity Result\n")
     lines.append(f"- Total runs: {total}")
     lines.append(f"- Passed: {passed}")
     lines.append(f"- Failed: {failed}")
@@ -512,6 +771,35 @@ def write_lucy_brief(
     else:
         lines.append("(no failures)")
 
+    # Musical Evaluation section
+    lines.append("")
+    lines.append("## Musical Evaluation\n")
+    lines.append(f"- Ear-test threshold: {eval_stats['ear_test_threshold']}")
+    lines.append(f"- Average score: {eval_stats['average_score']}")
+    lines.append(f"- Lowest score: {eval_stats['lowest_score']}")
+    lines.append(
+        f"- Runs below ear-test threshold: {eval_stats['runs_below_ear_test_threshold']}"
+    )
+    lines.append(f"- Runs below 75: {eval_stats['runs_below_75']}")
+    lines.append(f"- Do not ear test count: {eval_stats['do_not_ear_test_count']}")
+    lines.append("- Top deduction codes:")
+    lines.extend(_format_deduction_list(eval_stats["top_deduction_codes"], 10))
+    lines.append("- Top direct deduction codes:")
+    lines.extend(_format_deduction_list(eval_stats["top_direct_deductions"], 5))
+    if eval_stats["weakest_scenarios"]:
+        weakest_sc_str = "; ".join(
+            f"{sc}: {avg:.1f}" for sc, avg in eval_stats["weakest_scenarios"]
+        )
+        lines.append(f"- Weakest scenarios: {weakest_sc_str}")
+    if eval_stats["weakest_presets"]:
+        weakest_pr_str = "; ".join(
+            f"{pr}: {avg:.1f}" for pr, avg in eval_stats["weakest_presets"]
+        )
+        lines.append(f"- Weakest presets: {weakest_pr_str}")
+    ready_str = "YES" if eval_stats["ready_for_ear_testing"] else "NO"
+    lines.append(f"- Ready for ear testing: {ready_str}")
+    lines.append("")
+
     if examples:
         lines.append("")
         lines.append("## Representative Failures\n")
@@ -538,41 +826,7 @@ def write_lucy_brief(
     lines.append("## Suggested Next Action\n")
     lines.append("*Generated suggestion, not final judgement.*\n")
     lines.append("")
-    top_issues = issue_counts.most_common(3)
-    if top_issues:
-        for code, _ in top_issues:
-            if "ENTER_SOFT" in code:
-                lines.append(
-                    "- Likely next fix: tighten ENTER_SOFT shaping and/or sanity contract."
-                )
-            elif "DROP" in code:
-                lines.append(
-                    "- Likely next fix: separate DROP from BAIL more clearly "
-                    "or adjust DROP event generation."
-                )
-            elif "ANCHOR" in code:
-                lines.append(
-                    "- Likely next fix: reduce ANCHOR decoration and busyness."
-                )
-            elif "BAIL" in code:
-                lines.append(
-                    "- Likely next fix: ensure BAIL section produces exactly zero events."
-                )
-            elif "FINAL_BAIL" in code:
-                lines.append(
-                    "- Likely next fix: ensure FINAL_BAIL generates exactly "
-                    "kick+crash on beat 1 with no extras."
-                )
-            elif "MAINTAIN" in code:
-                lines.append(
-                    "- Likely next fix: ensure MAINTAIN sections always generate groove events."
-                )
-            elif "LISTEN" in code:
-                lines.append(
-                    "- Likely next fix: ensure LISTEN sections are always silent."
-                )
-    else:
-        lines.append("- No issues found. Ear testing is ready.")
+    lines.extend(_suggested_next_action(eval_stats))
     lines.append("")
     lines.append("---\n")
     lines.append("")
@@ -594,7 +848,7 @@ def run_single_case(
     preset_name: str,
 ) -> tuple[PlaytestDiagnosticsSummary, list[dict], list]:
     """Run one playtest scenario variation and return diagnostics + events."""
-    from drummer.playtest_feedback import get_scenario_variations, PlaytestScenario
+    from drummer.playtest_feedback import get_scenario_variations
 
     # Build a scenario from the requested name/variation/preset
     sc_list = get_scenario_variations(scenario_name, preset=preset_name)
@@ -624,6 +878,7 @@ def run_sanity_batch(
     scenarios = _resolve_scenarios(scenario_choice)
     presets = _resolve_presets(preset_choice)
     import random as _random
+
     rng = _random.Random(seed)
 
     # Build a list of all (scenario, variation, preset) tuples
@@ -649,7 +904,9 @@ def run_sanity_batch(
 
         try:
             summary, raw_diags, global_events = run_single_case(
-                scenario, variation, preset,
+                scenario,
+                variation,
+                preset,
             )
 
             # Build bar_events
@@ -659,6 +916,7 @@ def run_sanity_batch(
 
             # Run on all bars for full-scenario sanity
             from drummer.musical_sanity import check_musical_sanity
+
             sanity_report = MusicalSanityReport()
             for diag in raw_diags:
                 bar = diag.get("bar", 0)
@@ -666,6 +924,20 @@ def run_sanity_batch(
                 events = bar_events.get(bar, [])
                 br = check_musical_sanity(intent, events, bar_index=bar)
                 sanity_report.issues.extend(br.issues)
+
+            # Musical evaluation
+            arr_report = check_arrangement_sanity(raw_diags, global_events)
+            eval_report = evaluate_musical_usefulness(
+                per_bar_diagnostics=raw_diags,
+                global_events=global_events,
+                musical_sanity_report=sanity_report,
+                arrangement_sanity_report=arr_report,
+                context={
+                    "scenario": scenario,
+                    "variation": variation,
+                    "preset": preset,
+                },
+            )
 
             run = SelfPlayRun(
                 run_index=run_index,
@@ -681,6 +953,11 @@ def run_sanity_batch(
                 summary_first_enter_bar=summary.first_enter_bar,
                 summary_confidence_peak=summary.confidence_peak,
                 summary_contracts_passed=summary.output_contracts_passed,
+                evaluation_score=eval_report.score,
+                evaluation_grade=eval_report.grade,
+                safe_for_ear_testing=eval_report.safe_for_ear_testing,
+                total_deductions=sum(d.points for d in eval_report.deductions),
+                evaluation_deductions=[d.to_dict() for d in eval_report.deductions],
             )
         except Exception as e:
             run = SelfPlayRun(
@@ -692,12 +969,14 @@ def run_sanity_batch(
                 passed=False,
                 error_count=1,
                 warning_count=0,
-                sanity_issues=[{
-                    "severity": "error",
-                    "code": "RUN_EXCEPTION",
-                    "message": str(e),
-                    "bar_index": None,
-                }],
+                sanity_issues=[
+                    {
+                        "severity": "error",
+                        "code": "RUN_EXCEPTION",
+                        "message": str(e),
+                        "bar_index": None,
+                    }
+                ],
             )
 
         runs.append(run)
@@ -710,7 +989,9 @@ def run_sanity_batch(
             for issue in run.sanity_issues:
                 if issue.get("severity") == "error":
                     bar = issue.get("bar_index", "?")
-                    print(f"  FAIL: bar {bar} {issue.get('code', '')}: {issue.get('message', '')}")
+                    print(
+                        f"  FAIL: bar {bar} {issue.get('code', '')}: {issue.get('message', '')}"
+                    )
 
         if stop_on_fail and not run.passed:
             print(f"\n  --stop-on-fail triggered at run {run_index}")
@@ -729,32 +1010,69 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Self-play musical sanity batch runner."
     )
-    parser.add_argument("--runs", type=int, default=100,
-                        help="Number of runs (default: 100)")
-    parser.add_argument("--seed", type=int, default=42,
-                        help="Random seed (default: 42)")
-    parser.add_argument("--scenario", type=str, default="all",
-                        choices=list_playtest_scenarios() + ["all"],
-                        help="Scenario to run (default: all)")
-    parser.add_argument("--preset", type=str, default="all",
-                        choices=["cautious", "normal", "braver", "all"],
-                        help="Preset to run (default: all)")
-    parser.add_argument("--output-dir", type=str, default="artifacts/sanity",
-                        help="Output directory (default: artifacts/sanity)")
-    parser.add_argument("--markdown-report", type=str, default=None,
-                        help="Path to markdown report (default: output-dir/self_play_report.md)")
-    parser.add_argument("--jsonl-failures", type=str, default=None,
-                        help="Path to JSONL failure log (default: output-dir/self_play_failures.jsonl)")
-    parser.add_argument("--summary-json", type=str, default=None,
-                        help="Path to JSON summary (default: output-dir/self_play_summary.json)")
-    parser.add_argument("--lucy-brief", type=str, default=None,
-                        help="Path to Lucy-readable brief (default: output-dir/self_play_lucy_brief.md)")
-    parser.add_argument("--verbose", action="store_true",
-                        help="Print per-run details")
-    parser.add_argument("--failures-only", action="store_true",
-                        help="Suppress passing run output")
-    parser.add_argument("--stop-on-fail", action="store_true",
-                        help="Stop at first failure")
+    parser.add_argument(
+        "--runs", type=int, default=100, help="Number of runs (default: 100)"
+    )
+    parser.add_argument(
+        "--seed", type=int, default=42, help="Random seed (default: 42)"
+    )
+    parser.add_argument(
+        "--scenario",
+        type=str,
+        default="all",
+        choices=list_playtest_scenarios() + ["all"],
+        help="Scenario to run (default: all)",
+    )
+    parser.add_argument(
+        "--preset",
+        type=str,
+        default="all",
+        choices=["cautious", "normal", "braver", "all"],
+        help="Preset to run (default: all)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="artifacts/sanity",
+        help="Output directory (default: artifacts/sanity)",
+    )
+    parser.add_argument(
+        "--markdown-report",
+        type=str,
+        default=None,
+        help="Path to markdown report (default: output-dir/self_play_report.md)",
+    )
+    parser.add_argument(
+        "--jsonl-failures",
+        type=str,
+        default=None,
+        help="Path to JSONL failure log (default: output-dir/self_play_failures.jsonl)",
+    )
+    parser.add_argument(
+        "--summary-json",
+        type=str,
+        default=None,
+        help="Path to JSON summary (default: output-dir/self_play_summary.json)",
+    )
+    parser.add_argument(
+        "--lucy-brief",
+        type=str,
+        default=None,
+        help="Path to Lucy-readable brief (default: output-dir/self_play_lucy_brief.md)",
+    )
+    parser.add_argument("--verbose", action="store_true", help="Print per-run details")
+    parser.add_argument(
+        "--failures-only", action="store_true", help="Suppress passing run output"
+    )
+    parser.add_argument(
+        "--ear-test-threshold",
+        type=int,
+        default=90,
+        help="Batch-level readiness threshold (default: 90)",
+    )
+    parser.add_argument(
+        "--stop-on-fail", action="store_true", help="Stop at first failure"
+    )
     return parser
 
 
@@ -766,9 +1084,15 @@ def main() -> int:
     output_dir = args.output_dir
     os.makedirs(output_dir, exist_ok=True)
 
-    markdown_path = args.markdown_report or os.path.join(output_dir, "self_play_report.md")
-    jsonl_path = args.jsonl_failures or os.path.join(output_dir, "self_play_failures.jsonl")
-    summary_json_path = args.summary_json or os.path.join(output_dir, "self_play_summary.json")
+    markdown_path = args.markdown_report or os.path.join(
+        output_dir, "self_play_report.md"
+    )
+    jsonl_path = args.jsonl_failures or os.path.join(
+        output_dir, "self_play_failures.jsonl"
+    )
+    summary_json_path = args.summary_json or os.path.join(
+        output_dir, "self_play_summary.json"
+    )
     lucy_path = args.lucy_brief or os.path.join(output_dir, "self_play_lucy_brief.md")
 
     output_files = {
@@ -832,6 +1156,36 @@ def main() -> int:
             print(f"    {preset}: {count}")
         print()
 
+    # Musical evaluation terminal summary
+    eval_stats = _build_musical_evaluation_stats(runs, args.ear_test_threshold)
+    print("  Musical Evaluation:")
+    print(f"    Ear-test threshold:  {eval_stats['ear_test_threshold']}")
+    print(f"    Average score:       {eval_stats['average_score']}")
+    print(f"    Lowest score:        {eval_stats['lowest_score']}")
+    print(
+        f"    Below ear-test threshold: {eval_stats['runs_below_ear_test_threshold']}"
+    )
+    print(f"    Below 75:            {eval_stats['runs_below_75']}")
+    print(f"    Do not ear test:     {eval_stats['do_not_ear_test_count']}")
+    if eval_stats["top_deduction_codes"]:
+        print("    Top deduction codes:")
+        for item in eval_stats["top_deduction_codes"][:5]:
+            print(
+                f"      {item['code']}: {item['runs']} runs, {abs(item['total_points'])} points"
+            )
+    if eval_stats["weakest_scenarios"]:
+        weakest_sc_str = "; ".join(
+            f"{sc}: {avg:.1f}" for sc, avg in eval_stats["weakest_scenarios"]
+        )
+        print(f"    Weakest scenarios:   {weakest_sc_str}")
+    if eval_stats["weakest_presets"]:
+        weakest_pr_str = "; ".join(
+            f"{pr}: {avg:.1f}" for pr, avg in eval_stats["weakest_presets"]
+        )
+        print(f"    Weakest presets:     {weakest_pr_str}")
+    print(f"    Ready for ear testing: {eval_stats['ready_for_ear_testing']}")
+    print()
+
     # Write JSONL failures
     failures_written = 0
     with open(jsonl_path, "w", encoding="utf-8") as f:
@@ -842,27 +1196,47 @@ def main() -> int:
 
     # Write markdown report
     write_markdown_report(
-        markdown_path, runs, command, args.seed,
-        args.scenario, args.preset, output_dir, total,
+        markdown_path,
+        runs,
+        command,
+        args.seed,
+        args.scenario,
+        args.preset,
+        output_dir,
+        total,
+        ear_test_threshold=args.ear_test_threshold,
     )
 
     # Write JSON summary
     write_json_summary(
-        summary_json_path, runs, command, args.seed,
-        args.scenario, args.preset, output_dir, output_files,
+        summary_json_path,
+        runs,
+        command,
+        args.seed,
+        args.scenario,
+        args.preset,
+        output_dir,
+        output_files,
+        ear_test_threshold=args.ear_test_threshold,
     )
 
     # Write Lucy brief
     write_lucy_brief(
-        lucy_path, runs, command, args.seed,
-        args.scenario, args.preset, output_dir,
+        lucy_path,
+        runs,
+        command,
+        args.seed,
+        args.scenario,
+        args.preset,
+        output_dir,
+        ear_test_threshold=args.ear_test_threshold,
     )
 
     print(f"  Report written to:   {markdown_path}")
     print(f"  Failures written to: {jsonl_path} ({failures_written} failures)")
     print(f"  Summary written to:  {summary_json_path}")
     print(f"  Lucy brief written to: {lucy_path}")
-    print(f"  Paste that file to Lucy before ear testing.")
+    print("  Paste that file to Lucy before ear testing.")
     print(sep)
     print()
 

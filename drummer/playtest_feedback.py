@@ -248,66 +248,80 @@ def validate_questionnaire_answers(
 
 
 def _build_listen_focus(name: str, variation_name: str) -> tuple[int, int, str]:
-    """Return (listen_start_bar, listen_end_bar, what_to_listen_for)."""
+    """Return (listen_start_bar, listen_end_bar, what_to_listen_for).
+
+    Bar ranges match the scenario-specific timelines in
+    ``demo_continuous_jam_midi.py``.
+    """
     focus_map: dict[str, dict[str, tuple[int, int, str]]] = {
         "enter": {
             "stable_input": (
-                2, 5,
-                "Listen to how the drummer enters: does it feel natural? "
-                "Does it step in at the right moment?"
+                2, 11,
+                "Listen to how the drummer enters (bars 2-3): does it feel "
+                "natural? Then listen to the MAINTAIN section (bars 4-11): "
+                "does the drummer settle into a stable groove?"
             ),
             "uncertain_input": (
-                2, 5,
-                "Listen to how the drummer handles slightly erratic input: "
-                "does it hesitate or enter confidently despite uncertainty?"
+                2, 11,
+                "Listen to ENTER_SOFT at bars 2-3: does the drummer hesitate "
+                "or enter confidently despite uncertainty? Then MAINTAIN at "
+                "bars 4-11: does the groove stabilise?"
             ),
         },
         "build": {
             "slow_build": (
-                7, 12,
-                "Listen to the BUILD section (bars 7-12): does the intensity "
-                "ramp feel gradual and musical?"
+                6, 12,
+                "Listen to the BUILD section (bars 6-9): does the intensity "
+                "ramp feel gradual and musical? Then ARRIVAL at bars 10-12: "
+                "does the build arrive at a satisfying peak?"
             ),
             "strong_build": (
-                7, 10,
-                "Listen to the BUILD section (bars 7-9): does the drummer "
-                "build quickly and assertively without rushing?"
+                6, 12,
+                "Listen to the BUILD (bars 6-9): does the drummer build "
+                "quickly and assertively without rushing? Then ARRIVAL at "
+                "bars 10-12: does the arrival feel earned?"
             ),
         },
         "anchor_recovery": {
             "poor_phase_recovery": (
-                16, 19,
-                "Listen to the recovery after ANCHOR (bars 16-18): does the "
-                "drummer regain stability and lock back into the pocket?"
+                6, 15,
+                "Listen to ANCHOR at bars 6-9: does the uncertainty come "
+                "through? Then RECOVER at bars 10-15: does the drummer "
+                "regain stability and lock back into the pocket?"
             ),
             "weak_input_recovery": (
-                16, 19,
-                "Listen to the recovery after weak input (bars 16-18): does "
-                "the drummer re-establish the groove convincingly?"
+                6, 15,
+                "Listen to ANCHOR at bars 6-9: does weak/reduced input cause "
+                "obvious trouble? Then RECOVER at bars 10-15: does the "
+                "drummer re-establish the groove convincingly?"
             ),
         },
         "drop": {
             "deliberate_sparse": (
-                13, 14,
-                "Listen to the DROP at bar 13: does the pullback sound "
-                "intentional and tasteful, not like a mistake?"
+                9, 14,
+                "Listen to the DROP at bars 9-10: does the pullback sound "
+                "intentional and tasteful, not like a mistake? "
+                "Then RECOVER at bars 11-14: does the drummer climb back "
+                "in musically without rushing?"
             ),
             "pullback_after_build": (
-                13, 14,
-                "Listen to the DROP at bar 13 after the BUILD: does the "
-                "transition from dense to sparse feel musical?"
+                9, 14,
+                "Listen to DROP at bars 9-10 after the BUILD: does the "
+                "transition from dense to sparse feel musical? "
+                "Then RECOVER at bars 11-14: does recovery feel gradual?"
             ),
         },
         "final_bail": {
             "clear_cue": (
-                14, 16,
-                "Listen to the ending (bars 14-15): does the drummer give a "
-                "clear, confident cue that the performance is ending?"
+                9, 13,
+                "Listen to the ending cue at bar 9: does the drummer give a "
+                "clear, confident kick+crash that signals the end? "
+                "Then listen for perfect silence from bar 10 onward."
             ),
             "ambiguous_cue": (
-                14, 16,
-                "Listen to the ending (bars 14-15): does the ending feel "
-                "unclear or does the cue land well?"
+                9, 13,
+                "Listen to the ending at bar 9: does the cue feel weak or "
+                "unclear? Then check for total silence from bar 10 onward."
             ),
         },
     }
@@ -653,6 +667,7 @@ def run_playtest_scenario(
         mode="scripted",
         preset_name=scenario.preset,
         playtest_variation=scenario.variation_name,
+        scenario=scenario.name,
     )
 
     summary = _extract_diagnostics_summary(raw_diags)

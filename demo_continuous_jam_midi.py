@@ -97,25 +97,30 @@ from drummer.presets import (
 
 
 def _simple_groove() -> list[GrooveEvent]:
-    """Simple rock groove: kick 1/3, snare 2/4, 8th hats."""
+    """Simple rock groove: kick 1/3, snare 2/4, 8th hats on strong beats.
+
+    Has 8 events (M bucket) so MAINTAIN is distinguishable from BUILD (H bucket)
+    and SETTLE (M bucket with quarter hats).
+    Musically: kick on 1+3, snare on 2+4, hats on 8th notes.
+    """
     return [
         GrooveEvent("kick", 0, velocity=100),
         GrooveEvent("hi_hat", 0, velocity=80),
-        GrooveEvent("hi_hat", 2, velocity=70),
         GrooveEvent("snare", 4, velocity=100),
         GrooveEvent("hi_hat", 4, velocity=80),
-        GrooveEvent("hi_hat", 6, velocity=70),
         GrooveEvent("kick", 8, velocity=98),
         GrooveEvent("hi_hat", 8, velocity=80),
-        GrooveEvent("hi_hat", 10, velocity=70),
         GrooveEvent("snare", 12, velocity=100),
         GrooveEvent("hi_hat", 12, velocity=80),
-        GrooveEvent("hi_hat", 14, velocity=70),
     ]
 
 
 def _busy_groove() -> list[GrooveEvent]:
-    """Busier groove with 16th hats, ghost snares, extra kicks."""
+    """Busier groove with 16th hats, ghost snares, extra kicks.
+
+    Uses hi-hat for timekeeping with 16th subdivisions.
+    No crash — crash is reserved for arrivals and phrase markers.
+    """
     return [
         GrooveEvent("kick", 0, velocity=115),
         GrooveEvent("hi_hat", 0, velocity=80),
@@ -150,6 +155,101 @@ def _anchor_groove() -> list[GrooveEvent]:
         GrooveEvent("hi_hat", 8, velocity=90),
         GrooveEvent("snare", 12, velocity=100),
         GrooveEvent("hi_hat", 12, velocity=90),
+    ]
+
+
+def _arrival_groove() -> list[GrooveEvent]:
+    """Firm arrival groove: crash accent on 1, extra kick on 1&, ride colour.
+
+    Used after a BUILD to give a sense of arrival.
+    The crash on beat 1 is a tasteful arrival accent (not spam).
+    The extra kick and open hi-hat/ride give distinct skeleton character.
+    """
+    return [
+        GrooveEvent("kick", 0, velocity=115),
+        GrooveEvent("crash", 0, velocity=90),  # tasteful crash on arrival
+        GrooveEvent("hi_hat", 1, velocity=65),
+        GrooveEvent("hi_hat", 2, velocity=70),
+        GrooveEvent("kick", 3, velocity=80),  # extra kick on 1&
+        GrooveEvent("snare", 4, velocity=115),
+        GrooveEvent("ride", 4, velocity=85),  # ride on snare for colour
+        GrooveEvent("hi_hat", 5, velocity=65),
+        GrooveEvent("hi_hat", 6, velocity=70),
+        GrooveEvent("kick", 8, velocity=112),
+        GrooveEvent("ride", 8, velocity=80),  # ride on beat 3
+        GrooveEvent("hi_hat", 9, velocity=65),
+        GrooveEvent("hi_hat", 10, velocity=70),
+        GrooveEvent("snare", 12, velocity=112),
+        GrooveEvent("ride", 12, velocity=80),  # ride on beat 4
+        GrooveEvent("hi_hat", 13, velocity=65),
+        GrooveEvent("hi_hat", 14, velocity=70),
+    ]
+
+
+def _reduce_groove() -> list[GrooveEvent]:
+    """Thin reduce groove: kick 1&3, snare 2&4, no hats, no ghosts.
+
+    Significantly fewer events than _simple_groove (4 vs 12).
+    Low enough to produce L bucket in evaluator skeleton.
+    """
+    return [
+        GrooveEvent("kick", 0, velocity=70),
+        GrooveEvent("snare", 4, velocity=65),
+        GrooveEvent("kick", 8, velocity=65),
+        GrooveEvent("snare", 12, velocity=60),
+    ]
+
+
+def _settle_groove() -> list[GrooveEvent]:
+    """Settling groove: kick 1/3, snare 2/4, quarter-note hats.
+
+    Quarter-note hats instead of 8th hats for lower density.
+    8 events instead of 12 — produces M/L bucket.
+    """
+    return [
+        GrooveEvent("kick", 0, velocity=80),
+        GrooveEvent("hi_hat", 0, velocity=60),
+        GrooveEvent("snare", 4, velocity=85),
+        GrooveEvent("hi_hat", 4, velocity=60),
+        GrooveEvent("kick", 8, velocity=78),
+        GrooveEvent("hi_hat", 8, velocity=60),
+        GrooveEvent("snare", 12, velocity=82),
+        GrooveEvent("hi_hat", 12, velocity=60),
+    ]
+
+
+def _recover_groove_phase1() -> list[GrooveEvent]:
+    """Sparse recovery phase 1: kick pulse with soft snare on beat 4.
+
+    3 events per bar — differs from DROP's 2-event kick-only output.
+    The soft snare on beat 4 gives a musical hint that recovery is beginning,
+    and changes the evaluator bucket from L/0 (DROP) to L/1 (recovery).
+    """
+    return [
+        GrooveEvent("kick", 0, velocity=75),
+        GrooveEvent("kick", 8, velocity=72),
+        GrooveEvent("snare", 12, velocity=40),  # soft snare on beat 4 — recovery hint
+    ]
+
+
+def _recover_groove_phase2() -> list[GrooveEvent]:
+    """Medium recovery phase 2: add snare back, 8th hats.
+
+    Ramping back toward full groove — 10 events, M bucket.
+    """
+    return [
+        GrooveEvent("kick", 0, velocity=85),
+        GrooveEvent("hi_hat", 0, velocity=65),
+        GrooveEvent("hi_hat", 2, velocity=55),
+        GrooveEvent("snare", 4, velocity=90),
+        GrooveEvent("hi_hat", 4, velocity=65),
+        GrooveEvent("hi_hat", 6, velocity=55),
+        GrooveEvent("kick", 8, velocity=82),
+        GrooveEvent("hi_hat", 8, velocity=65),
+        GrooveEvent("hi_hat", 10, velocity=55),
+        GrooveEvent("snare", 12, velocity=88),
+        GrooveEvent("hi_hat", 12, velocity=65),
+        GrooveEvent("hi_hat", 14, velocity=55),
     ]
 
 
@@ -453,7 +553,7 @@ def _is_strong_beat(pos: int) -> bool:
 
 
 # ============================================================================
-# Simulated player timeline builder
+# Simulated player timeline builder — scenario-specific forms
 # ============================================================================
 
 
@@ -470,176 +570,363 @@ def _apply_timing_jitter(
     return jittered
 
 
-def build_simulated_timeline(
-    bpm: float = 120.0,
-    bars: int = 20,
-    playtest_variation: str = "",
+def _build_enter_timeline(
+    bpm: float,
+    bars: int,
+    playtest_variation: str,
 ) -> list[list[MusicalEvent]]:
-    """Build a simulated player event timeline, grouped by bar.
+    """Build timeline for ENTER scenario.
 
-    The *playtest_variation* parameter modifies the timeline to represent
-    different playtest scenario variations (e.g. uncertain vs stable input,
-    slow vs strong build).
-
-    Returns a list of ``bars`` lists of ``MusicalEvent`` for that bar's
-    time window.  The sequence follows a musical arc:
-
-    ======  ==========  ===========  =====================================
-    Bars    Section     Simulated    What happens
-    ======  ==========  ===========  =====================================
-    0–1     LISTEN      silence      No player events — pipeline listens.
-    2–3     ENTER       sparse       Sparse but steady quarter notes.
-    4–6     MAINTAIN    steady       Regular 8th-note pulse, good phase.
-    7–9     BUILD       rising       Increasing strength, 8th notes + pickups.
-    10–12   REDUCE      frantic      Overly dense 16th-note events.
-    13      DROP        thin         Sparse 8th notes, low strength.
-    14–15   FINAL_BAIL  gesture+silence  Strong hit then silence.
-    16      ANCHOR      weak         Weak erratic events, poor phase.
-    17–18   MAINTAIN_2  steady       8th-note pulse, good phase.
-    19      BAIL        silence      No events — long silence.
-    ======  ==========  ===========  =====================================
+    Bars 0-1:   LISTEN (empty)
+    Bars 2-3:   ENTER_SOFT (sparse quarter notes)
+    Bars 4-11:  MAINTAIN / SETTLE (steady 8th-note groove)
+    No FINAL_BAIL, no DROP, no ANCHOR.
     """
-    bar_duration = (60.0 / bpm) * 4.0  # seconds per bar
+    bar_duration = (60.0 / bpm) * 4.0
     all_bars: list[list[MusicalEvent]] = [[] for _ in range(bars)]
-
-    # Variation-specific modifiers
-    # uncertain_input: lower event strength, sparse events during enter phase,
-    # slightly jittered timing, poorer phase
     is_uncertain = (playtest_variation == "uncertain_input")
-    # strong_build: faster ramp, higher peak intensity early
-    is_strong_build = (playtest_variation == "strong_build")
-    # weak_input_recovery: weaker events after anchor making recovery harder
-    is_weak_recovery = (playtest_variation == "weak_input_recovery")
-    # ambiguous_cue: weaker ending cue, later final gesture
-    is_ambiguous_ending = (playtest_variation == "ambiguous_cue")
-    # pullback_after_build: stronger events before drop for bigger contrast
-    is_pullback = (playtest_variation == "pullback_after_build")
-    # poor_phase_recovery: events with wider phase drift after anchor
-    is_poor_phase = (playtest_variation == "poor_phase_recovery")
-    # deliberate_sparse: extra-sparse events, clearly intentional
-    is_deliberate_sparse = (playtest_variation == "deliberate_sparse")
 
     for bar in range(bars):
         bar_start = bar * bar_duration
 
-        # Bar 0-1: LISTEN — no events
         if bar <= 1:
-            continue  # empty bar
+            continue  # LISTEN — empty
 
-        # Bar 2-3: ENTER_SOFT — sparse quarter notes
         elif bar <= 3:
+            # ENTER_SOFT — sparse quarter notes
             if is_uncertain:
-                # Uncertain input: weaker events, only 2 per bar, slightly late
                 for beat in (0, 2):
                     t = bar_start + beat * (60.0 / bpm) + 0.03 * bar
-                    strength = 0.45 + 0.05 * bar  # grows from 0.45 to 0.55
+                    strength = 0.45 + 0.05 * bar
                     all_bars[bar].append(MusicalEvent(t, strength=min(strength, 0.65)))
             else:
-                # Stable input: confident quarter notes
                 for beat in range(4):
                     t = bar_start + beat * (60.0 / bpm)
                     all_bars[bar].append(MusicalEvent(t, strength=0.65))
 
-        # Bar 4-6: MAINTAIN — steady 8th-note pulse
-        elif bar <= 6:
-            eighth = 60.0 / bpm / 2.0
-            if is_uncertain:
-                # Lower certainty during maintain
-                for i in range(8):
-                    t = bar_start + i * eighth + 0.015 * i
-                    all_bars[bar].append(MusicalEvent(t, strength=0.50))
-            else:
-                for i in range(8):
-                    t = bar_start + i * eighth
-                    all_bars[bar].append(MusicalEvent(t, strength=0.7))
-
-        # Bar 7-9: BUILD — increasing strength, 8th notes with pickup
-        elif bar <= 9:
-            eighth = 60.0 / bpm / 2.0
-            if is_strong_build:
-                # Quick assertive build: higher strength from the start
-                build_progress = (bar - 7) / 2.0  # 0.0 → 1.0 over 2 bars
-                for i in range(8):
-                    t = bar_start + i * eighth
-                    strength = 0.65 + build_progress * 0.35  # 0.65 → 1.0
-                    all_bars[bar].append(MusicalEvent(t, strength=min(strength, 1.0)))
-                # Add 16th-note pickups from bar 8 onward
-                if bar >= 8:
-                    sixteenth = eighth / 2.0
-                    for pick in (13, 14, 15):
-                        t = bar_start + pick * sixteenth
-                        all_bars[bar].append(MusicalEvent(t, strength=0.7))
-            else:
-                # Gradual build (default) or uncertain_input
-                build_progress = (bar - 7) / 3.0  # 0.0 → 0.67 over 3 bars
-                strength_offset = -0.15 if is_uncertain else 0.0
-                for i in range(8):
-                    t = bar_start + i * eighth
-                    strength = 0.5 + build_progress * 0.45 + strength_offset
-                    all_bars[bar].append(MusicalEvent(t, strength=max(strength, 0.3)))
-                if build_progress > 0.3:
-                    sixteenth = eighth / 2.0
-                    for pick in (14, 15):
-                        t = bar_start + pick * sixteenth
-                        all_bars[bar].append(MusicalEvent(t, strength=0.6))
-
-        # Bar 10-12: REDUCE — frantic dense playing (16th notes)
-        elif bar <= 12:
-            sixteenth = 60.0 / bpm / 4.0
-            for i in range(16):
-                t = bar_start + i * sixteenth
-                # High density but varied strength to keep change_score up
-                strength = 0.7 if (i % 2 == 0) else 0.55
-                all_bars[bar].append(MusicalEvent(t, strength=strength))
-
-        # Bar 13: DROP — 2 widely-spaced events to keep certainty high enough for DROP
-        # but low enough to block BUILD (which requires certainty >= 0.55)
-        elif bar == 13:
-            # 2 events only → min_iois_for_stability (2) not met → stability=0
-            # → certainty ~ 0.3*strength_ema ≈ 0.3*0.4 ≈ 0.12 < 0.55 (BLOCK BUILD ✓)
-            # → certainty >= 0.20 (DROP min certainty ✓)
-            # → density ~ 0.17 <= 0.35 (DROP ✓)
-            t1 = bar_start
-            t2 = bar_start + 1.0
-            all_bars[bar].append(MusicalEvent(t1, strength=0.70))
-            all_bars[bar].append(MusicalEvent(t2, strength=0.05))
-
-        # Bar 14: FINAL_BAIL — strengthen, then ending gesture
-        elif bar == 14:
-            # 8 eighth-note events build strength_ema and certainty to high levels,
-            # then a final strong hit after the last 8th note (1.75s) → 1.8s
-            # → silence at bar-end = 0.2s (still reasonable for FINAL_BAIL detection)
-            eighth = 60.0 / bpm / 2.0
-            for i in range(8):
-                t = bar_start + i * eighth
-                all_bars[bar].append(MusicalEvent(t, strength=0.75))
-            # Final strong ending hit (after the last 8th note)
-            t_end = bar_start + 1.8
-            all_bars[bar].append(MusicalEvent(t_end, strength=0.95))
-
-        # Bar 15: FINAL_BAIL silence — no events
-        elif bar == 15:
-            continue  # empty — pipeline should stay in FINAL_BAIL or BAIL
-
-        # Bar 16: ANCHOR — weak erratic, poor phase
-        elif bar == 16:
-            for pos in [0.1, 0.5, 0.8, 1.1, 1.3, 1.5, 1.7, 1.9, 1.95]:
-                t = bar_start + pos
-                all_bars[bar].append(MusicalEvent(t, strength=0.12))
-
-        # Bar 17-18: MAINTAIN_2 — steady 8th-note recovery after ANCHOR
-        elif bar <= 18:
-            # Steady 8th-note pulse at full strength to trigger recovery
+        else:
+            # MAINTAIN / SETTLE — steady 8th-note pulse
             eighth = 60.0 / bpm / 2.0
             for i in range(8):
                 t = bar_start + i * eighth
                 all_bars[bar].append(MusicalEvent(t, strength=0.7))
 
-        # Bar 19: BAIL — silence, no events
+    return all_bars
+
+
+def _build_build_timeline(
+    bpm: float,
+    bars: int,
+    playtest_variation: str,
+) -> list[list[MusicalEvent]]:
+    """Build timeline for BUILD scenario.
+
+    Bars 0-1:   LISTEN (empty)
+    Bars 2-5:   MAINTAIN setup (steady 8th-note)
+    Bars 6-9:   BUILD (rising intensity, picks up)
+    Bars 10-12: ARRIVAL / strong MAINTAIN
+    Bars 13-15: SETTLE / slight reduce
+    No FINAL_BAIL, no DROP, no ANCHOR.
+    """
+    bar_duration = (60.0 / bpm) * 4.0
+    all_bars: list[list[MusicalEvent]] = [[] for _ in range(bars)]
+    is_strong_build = (playtest_variation == "strong_build")
+    is_uncertain = (playtest_variation == "uncertain_input")
+
+    for bar in range(bars):
+        bar_start = bar * bar_duration
+
+        if bar <= 1:
+            continue  # LISTEN
+
+        elif bar <= 5:
+            # MAINTAIN setup
+            eighth = 60.0 / bpm / 2.0
+            for i in range(8):
+                t = bar_start + i * eighth
+                all_bars[bar].append(MusicalEvent(t, strength=0.65))
+
+        elif bar <= 9:
+            # BUILD — rising intensity
+            eighth = 60.0 / bpm / 2.0
+            build_progress = (bar - 6) / 4.0
+            strength_offset = -0.10 if is_uncertain else 0.0
+            for i in range(8):
+                t = bar_start + i * eighth
+                strength = min(0.95, 0.50 + build_progress * 0.45 + strength_offset)
+                all_bars[bar].append(MusicalEvent(t, strength=max(strength, 0.3)))
+            # 16th-note pickups in later build bars
+            if bar >= 8:
+                sixteenth = eighth / 2.0
+                for pick in (14, 15):
+                    t = bar_start + pick * sixteenth
+                    all_bars[bar].append(MusicalEvent(t, strength=0.7))
+
+        elif bar <= 12:
+            # ARRIVAL / strong MAINTAIN
+            eighth = 60.0 / bpm / 2.0
+            for i in range(8):
+                t = bar_start + i * eighth
+                all_bars[bar].append(MusicalEvent(t, strength=0.80))
+
         else:
-            continue  # empty bars — BAIL should trigger from long silence
+            # SETTLE / slight REDUCE — quieter maintain
+            eighth = 60.0 / bpm / 2.0
+            for i in range(8):
+                t = bar_start + i * eighth
+                all_bars[bar].append(MusicalEvent(t, strength=0.55))
 
     return all_bars
+
+
+def _build_drop_timeline(
+    bpm: float,
+    bars: int,
+    playtest_variation: str,
+) -> list[list[MusicalEvent]]:
+    """Build timeline for DROP scenario.
+
+    Bars 0-1:   LISTEN (empty)
+    Bars 2-4:   MAINTAIN setup
+    Bars 5-8:   BUILD or busier
+    Bars 9-10:  DROP / REDUCE (thin)
+    Bars 11-14: RECOVER / MAINTAIN
+    Bars 15:    stable
+    No FINAL_BAIL, no ANCHOR.
+    """
+    bar_duration = (60.0 / bpm) * 4.0
+    all_bars: list[list[MusicalEvent]] = [[] for _ in range(bars)]
+    is_pullback = (playtest_variation == "pullback_after_build")
+    is_deliberate_sparse = (playtest_variation == "deliberate_sparse")
+
+    for bar in range(bars):
+        bar_start = bar * bar_duration
+
+        if bar <= 1:
+            continue
+
+        elif bar <= 4:
+            # MAINTAIN setup
+            eighth = 60.0 / bpm / 2.0
+            for i in range(8):
+                t = bar_start + i * eighth
+                all_bars[bar].append(MusicalEvent(t, strength=0.65))
+
+        elif bar <= 8:
+            # BUILD or busier
+            eighth = 60.0 / bpm / 2.0
+            build_progress = (bar - 5) / 4.0
+            for i in range(8):
+                t = bar_start + i * eighth
+                strength = min(0.90, 0.55 + build_progress * 0.35)
+                all_bars[bar].append(MusicalEvent(t, strength=strength))
+            if bar >= 7:
+                sixteenth = eighth / 2.0
+                for pick in (14, 15):
+                    t = bar_start + pick * sixteenth
+                    all_bars[bar].append(MusicalEvent(t, strength=0.7))
+
+        elif bar <= 10:
+            # DROP — thin sparse events
+            if is_deliberate_sparse:
+                # Single intentional kick pulse
+                all_bars[bar].append(MusicalEvent(bar_start, strength=0.75))
+            else:
+                t1 = bar_start
+                t2 = bar_start + 0.8
+                all_bars[bar].append(MusicalEvent(t1, strength=0.65))
+                all_bars[bar].append(MusicalEvent(t2, strength=0.05))
+
+        else:
+            # RECOVER / MAINTAIN — steady 8th-note
+            eighth = 60.0 / bpm / 2.0
+            for i in range(8):
+                t = bar_start + i * eighth
+                all_bars[bar].append(MusicalEvent(t, strength=0.65))
+
+    return all_bars
+
+
+def _build_anchor_recovery_timeline(
+    bpm: float,
+    bars: int,
+    playtest_variation: str,
+) -> list[list[MusicalEvent]]:
+    """Build timeline for ANCHOR_RECOVERY scenario.
+
+    Bars 0-1:   LISTEN (empty)
+    Bars 2-5:   MAINTAIN setup
+    Bars 6-9:   uncertainty / ANCHOR (weak erratic)
+    Bars 10-13: RECOVER / MAINTAIN
+    Bars 14-15: SETTLE
+    No FINAL_BAIL, no DROP.
+    """
+    bar_duration = (60.0 / bpm) * 4.0
+    all_bars: list[list[MusicalEvent]] = [[] for _ in range(bars)]
+    is_poor_phase = (playtest_variation == "poor_phase_recovery")
+    is_weak_recovery = (playtest_variation == "weak_input_recovery")
+
+    for bar in range(bars):
+        bar_start = bar * bar_duration
+
+        if bar <= 1:
+            continue
+
+        elif bar <= 5:
+            # MAINTAIN setup
+            eighth = 60.0 / bpm / 2.0
+            for i in range(8):
+                t = bar_start + i * eighth
+                all_bars[bar].append(MusicalEvent(t, strength=0.65))
+
+        elif bar <= 9:
+            # ANCHOR — weak erratic events
+            if is_poor_phase:
+                # Wide phase drift: poorly timed events
+                for pos in [0.1, 0.5, 0.8, 1.1, 1.3, 1.5, 1.7, 1.9]:
+                    t = bar_start + pos
+                    all_bars[bar].append(MusicalEvent(t, strength=0.10))
+            elif is_weak_recovery:
+                # Very sparse weak events
+                for pos in [0.2, 1.0, 1.8]:
+                    t = bar_start + pos
+                    all_bars[bar].append(MusicalEvent(t, strength=0.08))
+            else:
+                for pos in [0.1, 0.5, 0.8, 1.1, 1.3, 1.5, 1.7, 1.9, 1.95]:
+                    t = bar_start + pos
+                    all_bars[bar].append(MusicalEvent(t, strength=0.12))
+
+        else:
+            # RECOVER / SETTLE — steady 8th-note
+            eighth = 60.0 / bpm / 2.0
+            for i in range(8):
+                t = bar_start + i * eighth
+                all_bars[bar].append(MusicalEvent(t, strength=0.7))
+
+    return all_bars
+
+
+def _build_final_bail_timeline(
+    bpm: float,
+    bars: int,
+    playtest_variation: str,
+) -> list[list[MusicalEvent]]:
+    """Build timeline for FINAL_BAIL scenario.
+
+    Bars 0-1:   LISTEN (empty)
+    Bars 2-4:   MAINTAIN setup
+    Bars 5-8:   REDUCE / ending signal
+    Bar 9:      FINAL_BAIL cue (single kick+crash hit)
+    Bars 10-19: SILENCE — no events (no restart)
+    """
+    bar_duration = (60.0 / bpm) * 4.0
+    all_bars: list[list[MusicalEvent]] = [[] for _ in range(bars)]
+    is_ambiguous_ending = (playtest_variation == "ambiguous_cue")
+
+    for bar in range(bars):
+        bar_start = bar * bar_duration
+
+        if bar <= 1:
+            continue  # LISTEN
+
+        elif bar <= 4:
+            # MAINTAIN setup
+            eighth = 60.0 / bpm / 2.0
+            for i in range(8):
+                t = bar_start + i * eighth
+                all_bars[bar].append(MusicalEvent(t, strength=0.65))
+
+        elif bar <= 8:
+            # REDUCE / ending signal — thin but present
+            if bar == 8:
+                # Last bar before final cue: eighth notes
+                eighth = 60.0 / bpm / 2.0
+                for i in range(8):
+                    t = bar_start + i * eighth
+                    all_bars[bar].append(MusicalEvent(t, strength=0.50))
+            else:
+                # Earlier reduce bars: thinner
+                eighth = 60.0 / bpm / 2.0
+                for i in range(8):
+                    t = bar_start + i * eighth
+                    all_bars[bar].append(MusicalEvent(t, strength=0.55))
+
+        elif bar == 9:
+            # FINAL_BAIL cue — build up then final hit
+            eighth = 60.0 / bpm / 2.0
+            if is_ambiguous_ending:
+                # Weaker, later ending — only 4 eighth notes then late hit
+                for i in range(4):
+                    t = bar_start + i * eighth
+                    all_bars[bar].append(MusicalEvent(t, strength=0.55))
+                t_end = bar_start + 1.9
+                all_bars[bar].append(MusicalEvent(t_end, strength=0.65))
+            else:
+                # Clear ending: 8 notes then strong hit
+                for i in range(8):
+                    t = bar_start + i * eighth
+                    all_bars[bar].append(MusicalEvent(t, strength=0.75))
+                t_end = bar_start + 1.8
+                all_bars[bar].append(MusicalEvent(t_end, strength=0.95))
+
+        else:
+            # SILENCE — no events after final cue, no restart
+            continue
+
+    return all_bars
+
+
+_SCENARIO_TIMELINE_BUILDERS: dict[str, callable] = {
+    "enter": _build_enter_timeline,
+    "build": _build_build_timeline,
+    "drop": _build_drop_timeline,
+    "anchor_recovery": _build_anchor_recovery_timeline,
+    "final_bail": _build_final_bail_timeline,
+}
+
+
+def build_scenario_timeline(
+    bpm: float = 120.0,
+    bars: int = 16,
+    scenario: str = "enter",
+    playtest_variation: str = "",
+) -> list[list[MusicalEvent]]:
+    """Build a simulated player event timeline for a specific scenario.
+
+    Parameters
+    ----------
+    scenario : str
+        One of "enter", "build", "drop", "anchor_recovery", "final_bail".
+    playtest_variation : str
+        Variation name for modifier flags.
+    bars : int
+        Number of bars. Each scenario has a minimum bar count; if ``bars``
+        is larger, remaining bars are filled with silence.
+
+    Returns a list of ``bars`` lists of ``MusicalEvent``.
+    """
+    builder = _SCENARIO_TIMELINE_BUILDERS.get(scenario)
+    if builder is None:
+        # Fallback: generic timeline
+        from warnings import warn
+        warn(f"Unknown scenario {scenario!r}, using generic timeline")
+        return [[] for _ in range(bars)]
+
+    # Build with enough bars, then pad or trim
+    needed_bars = max(bars, 12)
+    timeline = builder(bpm=bpm, bars=needed_bars, playtest_variation=playtest_variation)
+
+    # Trim or pad to requested bar count
+    if len(timeline) > bars:
+        timeline = timeline[:bars]
+    while len(timeline) < bars:
+        timeline.append([])  # silence for extra bars
+
+    return timeline
+
+
+# Backward compatibility alias
+build_simulated_timeline = build_scenario_timeline
 
 
 # ============================================================================
@@ -744,6 +1031,43 @@ def _print_drop_diagnostics(snap, bar: int) -> None:
 
 
 # ============================================================================
+# Section-to-groove mapping
+# ============================================================================
+
+
+def _section_groove(section: str, bar: int, bars_in_section: int) -> list[GrooveEvent]:
+    """Choose a section-specific base groove for audible variation.
+
+    Returns a groove pattern appropriate for the current section.
+    The goal is to make each section's kick/snare skeleton audibly different
+    while keeping total event count reasonable.
+    """
+    # ARRIVAL after build: firm with ride accents
+    if section == "MAINTAIN_ARRIVAL":
+        return _arrival_groove()
+
+    # REDUCE: thin, no hats
+    if section == "REDUCE":
+        return _reduce_groove()
+
+    # SETTLE: quarter-note hats, fewer events
+    if section == "SETTLE":
+        return _settle_groove()
+
+    # RECOVER: phase 1 lasts only 1 bar (sparse), then phase 2 (medium)
+    if section == "RECOVER":
+        if bars_in_section < 1:
+            return _recover_groove_phase1()
+        elif bars_in_section < 4:
+            return _recover_groove_phase2()
+        else:
+            return _simple_groove()
+
+    # Default: standard groove
+    return _simple_groove()
+
+
+# ============================================================================
 # Continuous jam — core orchestration
 # ============================================================================
 
@@ -754,6 +1078,7 @@ def run_continuous_jam(
     mode: str = "scripted",
     preset_name: str = "normal",
     playtest_variation: str = "",
+    scenario: str = "enter",
 ) -> tuple[
     DrummerBrainPipeline,
     list[dict],  # per-bar diagnostics
@@ -776,6 +1101,9 @@ def run_continuous_jam(
     playtest_variation : str
         Variation name to modify the simulated timeline
         (e.g. ``"uncertain_input"``, ``"strong_build"``).
+    scenario : str
+        Scenario name for timeline form (``"enter"``, ``"build"``, ``"drop"``,
+        ``"anchor_recovery"``, ``"final_bail"``).
 
     Returns
     -------
@@ -793,7 +1121,9 @@ def run_continuous_jam(
     bar_duration = (60.0 / bpm) * 4.0
     is_inferred = mode == "inferred"
 
-    timeline = build_simulated_timeline(bpm=bpm, bars=bars, playtest_variation=playtest_variation)
+    timeline = build_scenario_timeline(
+        bpm=bpm, bars=bars, scenario=scenario, playtest_variation=playtest_variation,
+    )
 
     # Build pipeline with preset profile + output config
     from drummer.behaviour import FeatureDrivenBehaviourEngine
@@ -824,12 +1154,23 @@ def run_continuous_jam(
     # Track previous bar's event count for diagnostics
     prev_event_count = 0
 
+    # Track section changes for section-specific groove selection
+    current_section = ""
+    bars_in_section = 0
+
     for bar in range(bars):
         bar_start = bar * bar_duration
         bar_end = bar_start + bar_duration
 
         # Determine section name from timeline (used for diagnostics)
-        section = _timeline_section_name(bar, bars)
+        section = _timeline_section_name(bar, bars, scenario)
+
+        # Track consecutive bars in current section
+        if section != current_section:
+            current_section = section
+            bars_in_section = 0
+        else:
+            bars_in_section += 1
 
         # Feed events for this bar's time window
         for evt in timeline[bar]:
@@ -869,6 +1210,24 @@ def run_continuous_jam(
             # This lets BUILD/REDUCE/ENTER be truly inferred.
             intent = inferred_intent
 
+        # Map section to an arrangement intent so the intensity ramp matches
+        # the scenario section, not the pipeline inference (which may lag).
+        # This ensures section-specific grooves get correct arrangement scaling.
+        arrangement_intent = intent  # default
+        if section == "SETTLE":
+            arrangement_intent = BehaviourIntent.MAINTAIN
+        elif section == "MAINTAIN_ARRIVAL":
+            arrangement_intent = BehaviourIntent.MAINTAIN
+        elif section == "MAINTAIN":
+            arrangement_intent = BehaviourIntent.MAINTAIN
+        elif section == "RECOVER":
+            arrangement_intent = BehaviourIntent.MAINTAIN
+        elif section == "SILENCE":
+            arrangement_intent = BehaviourIntent.LISTEN
+        elif section == "ENTER_SOFT":
+            arrangement_intent = BehaviourIntent.ENTER_SOFT
+        # BUILD, REDUCE, DROP, FINAL_BAIL, ANCHOR already match via intent or section
+
         # Update confidence state after intent is decided
         confidence_state.update(snap, intent)
         confidence = confidence_state.confidence
@@ -883,22 +1242,27 @@ def run_continuous_jam(
         if section == "DROP" and is_inferred:
             _print_drop_diagnostics(snap, bar)
 
-        # Update arrangement state (advance ramp FIRST so render sees updated intensity)
-        arrangement.update_intent(intent, bar)
+        # Update arrangement state using the section-aligned intent
+        arrangement.update_intent(arrangement_intent, bar)
         arrangement.advance_bar()
 
-        # Choose base groove based on intent
-        if intent == BehaviourIntent.ANCHOR:
-            current_base = anchor_groove
-        elif intent in (BehaviourIntent.BUILD, BehaviourIntent.ENTER_FULL):
-            current_base = busy_groove
-        elif intent in (BehaviourIntent.LISTEN, BehaviourIntent.BAIL, BehaviourIntent.FINAL_BAIL):
+        # Choose base groove based on section (for intent-specific variation)
+        # and intent (for output-shaping sections).
+        # Check section first so section-specific grooves take priority.
+        output_intent = arrangement_intent
+        current_base = _section_groove(section, bar, bars_in_section)
+        # Override with intent-specific grooves for sections without custom grooves
+        if output_intent in (BehaviourIntent.LISTEN, BehaviourIntent.BAIL, BehaviourIntent.FINAL_BAIL):
             current_base = []  # Output shaper generates from scratch
-        else:
-            current_base = base_groove
-
+        elif output_intent == BehaviourIntent.ANCHOR:
+            current_base = anchor_groove
+        elif output_intent in (BehaviourIntent.BUILD, BehaviourIntent.ENTER_FULL):
+            # Only use busy_groove for actual BUILD sections, not for sections
+            # where the pipeline just happens to infer BUILD
+            if section in ("BUILD", "ENTER_SOFT"):
+                current_base = busy_groove
         # Render bar with arrangement context
-        shaped = renderer.render_bar(current_base, arrangement, bar, intent)
+        shaped = renderer.render_bar(current_base, arrangement, bar, output_intent)
 
         # --- Phrase marker selection ---
         # Update phrase state based on intent for post-ANCHOR tracking
@@ -937,14 +1301,62 @@ def run_continuous_jam(
         is_bail = is_bail_output(shaped)
         is_final = is_final_bail_output(shaped)
 
-        # Build notes summary
+        # Build notes summary — include crash/ride info even for large bars
+        # so the evaluator can detect cymbal-based skeleton changes
         if notes_added == 0:
             notes_summary = ""
-        elif notes_added <= 4:
-            instruments = [e.instrument for e in shaped]
-            notes_summary = ", ".join(instruments)
         else:
-            notes_summary = f"{notes_added} events"
+            instruments = [e.instrument for e in shaped]
+            unique_insts = list(set(instruments))
+            has_crash = any("crash" in i.lower() for i in unique_insts)
+            has_ride = any("ride" in i.lower() for i in unique_insts)
+            if notes_added <= 4:
+                notes_summary = ", ".join(instruments)
+            elif has_crash or has_ride:
+                # Include crash/ride hint for evaluator skeleton detection
+                cymbal_hints = []
+                if has_crash:
+                    cymbal_hints.append("crash")
+                if has_ride:
+                    cymbal_hints.append("ride")
+                notes_summary = f"{notes_added} events ({'; '.join(cymbal_hints)})"
+            else:
+                notes_summary = f"{notes_added} events"
+
+        # Per-bar instrument counts for detailed diagnostics
+        kick_count = sum(1 for e in shaped if e.instrument.lower() == "kick")
+        snare_count = sum(1 for e in shaped if e.instrument.lower() == "snare")
+        hat_count = sum(1 for e in shaped if e.instrument in ("hi_hat", "closed_hat", "open_hat"))
+        crash_count = sum(1 for e in shaped if "crash" in e.instrument.lower())
+        ride_count = sum(1 for e in shaped if "ride" in e.instrument.lower())
+        ghost_count = sum(1 for e in shaped if e.articulation == "ghost" or e.source_role == "ghost")
+        velocities = [e.velocity for e in shaped if e.velocity > 0]
+        max_vel = max(velocities) if velocities else 0
+        avg_vel = round(sum(velocities) / len(velocities), 1) if velocities else 0.0
+
+        # Skeleton signature from musical_evaluation
+        from drummer.musical_evaluation import _bar_skeleton_sig
+        skeleton_sig = _bar_skeleton_sig({
+            "event_count": notes_added,
+            "density": snap.input_density,
+            "notes_summary": notes_summary,
+        })
+
+        # Repetition detection: compare with previous bar's signature
+        repeated_from_previous = False
+        repeated_run_length = 1
+        if bar > 0:
+            prev_sig = diagnostics[-1].get("skeleton_sig", "")
+            if prev_sig == skeleton_sig:
+                repeated_from_previous = True
+                # Count consecutive similar bars backwards
+                run = 1
+                for j in range(len(diagnostics) - 1, -1, -1):
+                    if diagnostics[j].get("skeleton_sig", "") == skeleton_sig:
+                        run += 1
+                    else:
+                        break
+                repeated_run_length = run
 
         marker_label = phrase_marker_label(marker_type)
 
@@ -952,6 +1364,7 @@ def run_continuous_jam(
             "bar": bar,
             "time": bar_start,
             "section": section,
+            "bars_in_section": bars_in_section,
             "density": snap.input_density,
             "certainty": snap.player_certainty,
             "stability": snap.repetition_stability,
@@ -960,6 +1373,7 @@ def run_continuous_jam(
             "phase": phase,
             "inferred_intent": inferred_intent.value,
             "intent": intent.value,
+            "rendered_intent": arrangement_intent.value,
             "arrangement_intensity": arrangement.current_intensity,
             "velocity_scale": arrangement.current_velocity_scale,
             "hat_density": arrangement.current_hat_density,
@@ -974,14 +1388,109 @@ def run_continuous_jam(
             "notes_summary": notes_summary,
             "phrase_marker": marker_type.value,
             "phrase_marker_label": marker_label,
+            "kick_count": kick_count,
+            "snare_count": snare_count,
+            "hat_count": hat_count,
+            "crash_count": crash_count,
+            "ride_count": ride_count,
+            "ghost_count": ghost_count,
+            "max_velocity": max_vel,
+            "avg_velocity": avg_vel,
+            "skeleton_sig": skeleton_sig,
+            "repeated_from_previous": repeated_from_previous,
+            "repeated_run_length": repeated_run_length,
         }
         diagnostics.append(diag)
 
     return pipeline, diagnostics, global_events
 
 
-def _timeline_section_name(bar: int, total_bars: int) -> str:
-    """Return the named section for a bar index in the simulated timeline."""
+def _scenario_section_name(scenario: str, bar: int, total_bars: int) -> str:
+    """Return the named section for a bar in a scenario-specific timeline."""
+    if scenario == "enter":
+        if bar <= 1:
+            return "LISTEN"
+        elif bar <= 3:
+            return "ENTER_SOFT"
+        else:
+            return "MAINTAIN"
+    elif scenario == "build":
+        if bar <= 1:
+            return "LISTEN"
+        elif bar <= 5:
+            return "MAINTAIN"
+        elif bar <= 9:
+            return "BUILD"
+        elif bar <= 12:
+            return "MAINTAIN_ARRIVAL"
+        else:
+            return "SETTLE"
+    elif scenario == "drop":
+        if bar <= 1:
+            return "LISTEN"
+        elif bar <= 4:
+            return "MAINTAIN"
+        elif bar <= 8:
+            return "BUILD"
+        elif bar <= 10:
+            return "DROP"
+        else:
+            return "RECOVER"
+    elif scenario == "anchor_recovery":
+        if bar <= 1:
+            return "LISTEN"
+        elif bar <= 5:
+            return "MAINTAIN"
+        elif bar <= 9:
+            return "ANCHOR"
+        else:
+            return "RECOVER"
+    elif scenario == "final_bail":
+        if bar <= 1:
+            return "LISTEN"
+        elif bar <= 4:
+            return "MAINTAIN"
+        elif bar <= 8:
+            return "REDUCE"
+        elif bar == 9:
+            return "FINAL_BAIL"
+        else:
+            return "SILENCE"
+    else:
+        # Fallback for unknown scenarios
+        if bar <= 1:
+            return "LISTEN"
+        elif bar <= 3:
+            return "ENTER_SOFT"
+        elif bar <= 6:
+            return "MAINTAIN"
+        elif bar <= 9:
+            return "BUILD"
+        elif bar <= 12:
+            return "REDUCE"
+        elif bar == 13:
+            return "DROP"
+        elif bar == 14:
+            return "FINAL_BAIL"
+        elif bar == 15:
+            return "FINAL_BAIL_SILENCE"
+        elif bar == 16:
+            return "ANCHOR"
+        elif bar <= 18:
+            return "MAINTAIN_2"
+        else:
+            return "BAIL"
+
+
+def _timeline_section_name(bar: int, total_bars: int, scenario: str = "enter") -> str:
+    """Return the named section for a bar index in the simulated timeline.
+
+    Delegates to scenario-specific section naming when a scenario is given.
+    Falls back to the original generic timeline for backward compatibility.
+    """
+    if scenario and scenario in ("enter", "build", "drop", "anchor_recovery", "final_bail"):
+        return _scenario_section_name(scenario, bar, total_bars)
+    # Original generic fallback
     if bar <= 1:
         return "LISTEN"
     elif bar <= 3:
@@ -993,17 +1502,17 @@ def _timeline_section_name(bar: int, total_bars: int) -> str:
     elif bar <= 12:
         return "REDUCE"
     elif bar == 13:
-        return "DROP"  # Brief thin bar — triggers pullback
+        return "DROP"
     elif bar == 14:
-        return "FINAL_BAIL"  # Strong hit on beat 1 — ending gesture
+        return "FINAL_BAIL"
     elif bar == 15:
-        return "FINAL_BAIL_SILENCE"  # Silence after final cue
+        return "FINAL_BAIL_SILENCE"
     elif bar == 16:
-        return "ANCHOR"  # Weak erratic events
+        return "ANCHOR"
     elif bar <= 18:
-        return "MAINTAIN_2"  # Recovery — steady groove
+        return "MAINTAIN_2"
     else:
-        return "BAIL"  # Long silence
+        return "BAIL"
 
 
 # ============================================================================
@@ -1448,6 +1957,11 @@ def main() -> int:
                         help="Print only, do not send MIDI")
     parser.add_argument("--print-schedule", action="store_true",
                         help="Print the full per-event MIDI schedule")
+    parser.add_argument("--scenario", type=str, default="enter",
+                        choices=["enter", "build", "drop", "anchor_recovery", "final_bail"],
+                        help="Scenario timeline form (default: enter)")
+    parser.add_argument("--playtest-variation", type=str, default="",
+                        help="Playtest variation name (e.g. uncertain_input, strong_build)")
     parser.add_argument("--export-json", type=str, default=None,
                         metavar="PATH",
                         help="Export per-bar diagnostics as JSON to PATH")
@@ -1498,6 +2012,7 @@ def main() -> int:
     # Run the jam with preset
     pipeline, diagnostics, global_events = run_continuous_jam(
         bars=bars, bpm=bpm, mode=mode, preset_name=preset_name,
+        scenario=args.scenario, playtest_variation=args.playtest_variation,
     )
 
     # Print diagnostics

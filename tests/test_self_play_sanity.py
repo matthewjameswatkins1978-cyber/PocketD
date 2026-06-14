@@ -20,6 +20,11 @@ from demo_self_play_sanity import (
     _find_representative_failures,
     _rerun_command,
     _compact_event_summary,
+    _build_musical_evaluation_stats,
+    _aggregate_deductions,
+    _suggested_next_action,
+    _format_deduction_list,
+    build_parser,
     run_sanity_batch,
     run_single_case,
 )
@@ -103,6 +108,19 @@ class TestSelfPlayRun:
         assert loaded["run_index"] == 5
         assert loaded["sanity_issues"][0]["code"] == "DROP_SILENT"
 
+    def test_includes_evaluation_deductions(self) -> None:
+        r = SelfPlayRun(
+            run_index=0, seed=42, scenario="enter", variation="stable_input",
+            preset="normal", passed=True, error_count=0, warning_count=0,
+            evaluation_deductions=[
+                {"code": "STATIC_TEST", "reason": "x", "points": -20, "source": "direct_evaluation"},
+            ],
+        )
+        d = r.to_dict()
+        assert "evaluation_deductions" in d
+        assert len(d["evaluation_deductions"]) == 1
+        assert d["evaluation_deductions"][0]["code"] == "STATIC_TEST"
+
 
 # ---------------------------------------------------------------------------
 # Report builders
@@ -151,6 +169,149 @@ class TestReportBuilders:
         assert "seed 123" in cmd
         assert "enter" in cmd
         assert "braver" in cmd
+
+
+# ---------------------------------------------------------------------------
+# Deduction aggregation
+# ---------------------------------------------------------------------------
+
+
+class TestDeductionAggregation:
+    def test_empty_runs(self) -> None:
+        all_codes, direct_codes = _aggregate_deductions([])
+        assert all_codes == []
+        assert direct_codes == []
+
+    def test_aggregate_returns_code_counts_and_points(self) -> None:
+        runs = [
+            SelfPlayRun(0, 42, "enter", "a", "normal", True, 0, 0,
+                        evaluation_score=50, total_deductions=-50,
+                        evaluation_deductions=[
+                            {"code": "STATIC_SECTION_6_PLUS", "reason": "x", "points": -20, "source": "direct_evaluation"},
+                            {"code": "STATIC_SECTION_6_PLUS", "reason": "x", "points": -20, "source": "direct_evaluation"},
+                            {"code": "BUILD_WITH_NO_ARRIVAL", "reason": "y", "points": -20, "source": "direct_evaluation"},
+                            {"code": "MUSICAL_SANITY_ERRORS", "reason": "z", "points": -50, "source": "contract"},
+                        ]),
+            SelfPlayRun(1, 42, "enter", "b", "normal", True, 0, 0,
+                        evaluation_score=60, total_deductions=-40,
+                        evaluation_deductions=[
+                            {"code": "STATIC_SECTION_6_PLUS", "reason": "x", "points": -20, "source": "direct_evaluation"},
+                            {"code": "MUSICAL_SANITY_ERRORS", "reason": "z", "points": -50, "source": "contract"},
+                        ]),
+        ]
+        all_codes, direct_codes = _aggregate_deductions(runs)
+
+        code_map = {c["code"]: c for c in all_codes}
+        assert code_map["STATIC_SECTION_6_PLUS"]["runs"] == 2  # 2 runs with this code
+        assert code_map["STATIC_SECTION_6_PLUS"]["total_points"] == -60  # sum of ALL deductions: -20*3
+        assert code_map["BUILD_WITH_NO_ARRIVAL"]["runs"] == 1
+        assert code_map["BUILD_WITH_NO_ARRIVAL"]["total_points"] == -20
+        assert code_map["MUSICAL_SANITY_ERRORS"]["runs"] == 2
+        assert code_map["MUSICAL_SANITY_ERRORS"]["total_points"] == -100
+
+        # Direct codes should only include direct_evaluation source
+        direct_map = {c["code"]: c for c in direct_codes}
+        assert "STATIC_SECTION_6_PLUS" in direct_map
+        assert "MUSICAL_SANITY_ERRORS" not in direct_map
+        assert direct_map["STATIC_SECTION_6_PLUS"]["runs"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Musical evaluation stats
+# ---------------------------------------------------------------------------
+
+
+class TestMusicalEvaluationStats:
+    def test_top_direct_deductions_is_list_not_scalar(self) -> None:
+        runs = [
+            SelfPlayRun(0, 42, "enter", "a", "normal", True, 0, 0,
+                        evaluation_score=50, total_deductions=-50,
+                        evaluation_deductions=[
+                            {"code": "STATIC_TEST", "reason": "x", "points": -20, "source": "direct_evaluation"},
+                        ]),
+        ]
+        stats = _build_musical_evaluation_stats(runs, ear_test_threshold=90)
+        assert isinstance(stats["top_direct_deductions"], list)
+        assert len(stats["top_direct_deductions"]) == 1
+        d = stats["top_direct_deductions"][0]
+        assert d["code"] == "STATIC_TEST"
+        assert "runs" in d
+        assert "total_points" in d
+
+    def test_low_average_score_not_ready(self) -> None:
+        runs = [
+            SelfPlayRun(0, 42, "enter", "a", "normal", True, 0, 0,
+                        evaluation_score=30, evaluation_grade="do_not_ear_test",
+                        safe_for_ear_testing=False, total_deductions=-70),
+        ]
+        stats = _build_musical_evaluation_stats(runs, ear_test_threshold=90)
+        assert stats["ready_for_ear_testing"] is False
+        assert stats["average_score"] == 30.0
+
+    def test_empty_stats_no_crash(self) -> None:
+        stats = _build_musical_evaluation_stats([])
+        assert stats["top_deduction_codes"] == []
+        assert stats["top_direct_deductions"] == []
+
+
+# ---------------------------------------------------------------------------
+# Suggested next action
+# ---------------------------------------------------------------------------
+
+
+class TestSuggestedNextAction:
+    def test_ready_returns_ear_testing_ready(self) -> None:
+        stats = {"ready_for_ear_testing": True}
+        actions = _suggested_next_action(stats)
+        assert any("Ear testing is ready" in a for a in actions)
+        assert not any("Do not ear test" in a for a in actions)
+
+    def test_not_ready_mentions_do_not_ear_test(self) -> None:
+        stats = {
+            "ready_for_ear_testing": False,
+            "average_score": 21.0,
+            "top_deduction_codes": [
+                {"code": "STATIC_SECTION_6_PLUS", "runs": 42, "total_points": -840},
+            ],
+        }
+        actions = _suggested_next_action(stats)
+        text = "\n".join(actions)
+        assert "Do not ear test yet" in text
+        assert "STATIC_SECTION_6_PLUS" in text
+
+    def test_not_ready_with_no_top_codes(self) -> None:
+        stats = {
+            "ready_for_ear_testing": False,
+            "average_score": 21.0,
+            "top_deduction_codes": [],
+        }
+        actions = _suggested_next_action(stats)
+        text = "\n".join(actions)
+        assert "Do not ear test yet" in text
+
+
+# ---------------------------------------------------------------------------
+# Format deduction list
+# ---------------------------------------------------------------------------
+
+
+class TestFormatDeductionList:
+    def test_format_single_item(self) -> None:
+        items = [{"code": "TEST", "runs": 5, "total_points": -100}]
+        lines = _format_deduction_list(items)
+        assert len(lines) > 0
+        assert "TEST" in lines[0]
+        assert "5 runs" in lines[0]
+        assert "100 points" in lines[0]
+
+    def test_empty_list(self) -> None:
+        lines = _format_deduction_list([])
+        assert "(none)" in lines[0]
+
+    def test_respects_max_items(self) -> None:
+        items = [{"code": f"C{i}", "runs": 1, "total_points": -10} for i in range(10)]
+        lines = _format_deduction_list(items, max_items=3)
+        assert len(lines) == 3
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +367,6 @@ class TestBatchRunner:
     def test_different_seeds_different_cases(self) -> None:
         runs1 = run_sanity_batch(5, 99, "all", "all")
         runs2 = run_sanity_batch(5, 100, "all", "all")
-        # At least some runs should differ
         matches = sum(
             1 for r1, r2 in zip(runs1, runs2)
             if r1.scenario == r2.scenario and r1.variation == r2.variation and r1.preset == r2.preset
@@ -224,12 +384,9 @@ class TestBatchRunner:
             assert r.preset == "normal"
 
     def test_sanity_runs_full_scenario(self) -> None:
-        """Batch runner checks sanity across all bars, not just focus range."""
         runs = run_sanity_batch(5, 42, "all", "normal")
         for r in runs:
-            # All runs should produce full scenario diagnostics
             assert r.summary_total_events >= 0
-            # sanity_issues should be populated
             assert isinstance(r.sanity_issues, list)
 
     def test_zero_failures(self) -> None:
@@ -238,9 +395,14 @@ class TestBatchRunner:
             assert isinstance(r.passed, bool)
 
     def test_single_verbose_run(self) -> None:
-        """A single run with verbose completes without error."""
         runs = run_sanity_batch(1, 42, "enter", "normal", verbose=True)
         assert len(runs) == 1
+
+    def test_runs_include_evaluation_deductions(self) -> None:
+        runs = run_sanity_batch(3, 42, "enter", "normal")
+        for r in runs:
+            assert isinstance(r.evaluation_deductions, list)
+            assert isinstance(r.evaluation_score, int)
 
 
 # ---------------------------------------------------------------------------
@@ -250,7 +412,6 @@ class TestBatchRunner:
 
 class TestOutputFiles:
     def test_output_files_are_created(self) -> None:
-        """Running the main function generates all four output files."""
         import subprocess
         import sys as _sys
 
@@ -265,7 +426,6 @@ class TestOutputFiles:
             )
             assert result.returncode == 0
 
-            # Check output files
             report = os.path.join(output_dir, "self_play_report.md")
             failures = os.path.join(output_dir, "self_play_failures.jsonl")
             summary = os.path.join(output_dir, "self_play_summary.json")
@@ -275,7 +435,6 @@ class TestOutputFiles:
             assert os.path.exists(summary), f"Missing: {summary}"
             assert os.path.exists(lucy), f"Missing: {lucy}"
 
-            # Verify content
             with open(report) as f:
                 content = f.read()
                 assert "Self-Play Sanity Report" in content
@@ -288,9 +447,159 @@ class TestOutputFiles:
             with open(lucy) as f:
                 content = f.read()
                 assert "Sanity Brief" in content
+                assert "Sanity Result" in content
                 assert "Paste this whole file to Lucy" in content
 
         finally:
+            import shutil
+            if os.path.exists(output_dir):
+                shutil.rmtree(output_dir)
+
+    def test_output_contains_musical_evaluation(self) -> None:
+        import subprocess
+        import sys as _sys
+
+        output_dir = _tmp_path(suffix="") + "_sanity_eval"
+        try:
+            result = subprocess.run(
+                [_sys.executable, "demo_self_play_sanity.py",
+                 "--runs", "3", "--scenario", "enter", "--preset", "normal",
+                 "--output-dir", output_dir],
+                capture_output=True, text=True,
+                cwd=str(Path(__file__).resolve().parent.parent),
+            )
+            assert result.returncode == 0
+
+            lucy = os.path.join(output_dir, "self_play_lucy_brief.md")
+            summary = os.path.join(output_dir, "self_play_summary.json")
+
+            with open(lucy) as f:
+                content = f.read()
+                assert "Musical Evaluation" in content
+                assert "Top deduction codes:" in content
+
+            with open(summary) as f:
+                data = json.load(f)
+                assert "musical_evaluation" in data
+                me = data["musical_evaluation"]
+                assert "top_deduction_codes" in me
+                assert isinstance(me["top_deduction_codes"], list)
+
+        finally:
+            import shutil
+            if os.path.exists(output_dir):
+                shutil.rmtree(output_dir)
+
+
+# ---------------------------------------------------------------------------
+# Ear-test threshold
+# ---------------------------------------------------------------------------
+
+
+class TestEarTestThreshold:
+    def test_parser_accepts_threshold(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["--ear-test-threshold", "90"])
+        assert args.ear_test_threshold == 90
+
+    def test_parser_accepts_80(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["--ear-test-threshold", "80"])
+        assert args.ear_test_threshold == 80
+
+    def test_parser_default_is_90(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args([])
+        assert args.ear_test_threshold == 90
+
+    def test_batch_readiness_uses_threshold(self) -> None:
+        runs = [
+            SelfPlayRun(0, 42, "enter", "a", "normal", True, 0, 0,
+                        evaluation_score=85, evaluation_grade="usable",
+                        safe_for_ear_testing=True, total_deductions=-10),
+            SelfPlayRun(1, 42, "enter", "b", "normal", True, 0, 0,
+                        evaluation_score=80, evaluation_grade="usable",
+                        safe_for_ear_testing=True, total_deductions=-15),
+        ]
+        stats = _build_musical_evaluation_stats(runs, ear_test_threshold=90)
+        assert stats["ready_for_ear_testing"] is False
+        assert stats["ear_test_threshold"] == 90
+
+        stats80 = _build_musical_evaluation_stats(runs, ear_test_threshold=80)
+        assert stats80["ready_for_ear_testing"] is True
+        assert stats80["ear_test_threshold"] == 80
+
+    def test_readiness_requires_zero_errors(self) -> None:
+        runs = [
+            SelfPlayRun(0, 42, "enter", "a", "normal", True, 1, 0,
+                        evaluation_score=95, evaluation_grade="excellent",
+                        safe_for_ear_testing=True, total_deductions=0),
+            SelfPlayRun(1, 42, "enter", "b", "normal", True, 0, 0,
+                        evaluation_score=95, evaluation_grade="excellent",
+                        safe_for_ear_testing=True, total_deductions=0),
+        ]
+        stats = _build_musical_evaluation_stats(runs, ear_test_threshold=90)
+        assert stats["ready_for_ear_testing"] is False
+
+    def test_readiness_requires_no_do_not_ear_test(self) -> None:
+        runs = [
+            SelfPlayRun(0, 42, "enter", "a", "normal", True, 0, 0,
+                        evaluation_score=95, evaluation_grade="excellent",
+                        safe_for_ear_testing=True, total_deductions=0),
+            SelfPlayRun(1, 42, "enter", "b", "normal", True, 0, 0,
+                        evaluation_score=55, evaluation_grade="do_not_ear_test",
+                        safe_for_ear_testing=False, total_deductions=-45),
+        ]
+        stats = _build_musical_evaluation_stats(runs, ear_test_threshold=50)
+        assert stats["do_not_ear_test_count"] == 1
+        assert stats["ready_for_ear_testing"] is False
+
+    def test_lucy_brief_includes_threshold(self) -> None:
+        import subprocess
+        import sys as _sys
+        tmp = tempfile.NamedTemporaryFile(suffix=".md", delete=False)
+        tmp.close()
+        output_dir = tmp.name + "_ear_test"
+        os.makedirs(output_dir, exist_ok=True)
+        try:
+            subprocess.run(
+                [_sys.executable, "demo_self_play_sanity.py",
+                 "--runs", "2", "--scenario", "enter", "--preset", "normal",
+                 "--lucy-brief", tmp.name, "--output-dir", output_dir,
+                 "--ear-test-threshold", "85"],
+                capture_output=True, text=True,
+                cwd=str(Path(__file__).resolve().parent.parent),
+            )
+            with open(tmp.name) as f:
+                content = f.read()
+                assert "Ear-test threshold: 85" in content
+        finally:
+            os.unlink(tmp.name)
+            import shutil
+            if os.path.exists(output_dir):
+                shutil.rmtree(output_dir)
+
+    def test_json_summary_stores_threshold(self) -> None:
+        import subprocess
+        import sys as _sys
+        tmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+        tmp.close()
+        output_dir = tmp.name + "_ear_test_json"
+        os.makedirs(output_dir, exist_ok=True)
+        try:
+            subprocess.run(
+                [_sys.executable, "demo_self_play_sanity.py",
+                 "--runs", "2", "--scenario", "enter", "--preset", "normal",
+                 "--summary-json", tmp.name, "--output-dir", output_dir,
+                 "--ear-test-threshold", "70"],
+                capture_output=True, text=True,
+                cwd=str(Path(__file__).resolve().parent.parent),
+            )
+            with open(tmp.name) as f:
+                data = json.load(f)
+                assert data["musical_evaluation"]["ear_test_threshold"] == 70
+        finally:
+            os.unlink(tmp.name)
             import shutil
             if os.path.exists(output_dir):
                 shutil.rmtree(output_dir)

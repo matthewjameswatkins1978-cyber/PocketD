@@ -140,7 +140,22 @@ def _print_diagnostics_summary(
     print(f"  Drop events:         {summary.drop_event_count}")
     print(f"  Final bail events:   {summary.final_bail_event_count}")
     print(f"  Bail events:         {summary.bail_event_count}")
-    print(f"  Contracts passed:    {summary.output_contracts_passed}")
+    contracts_pass = summary.output_contracts_passed
+    print(f"  Contracts passed:    {contracts_pass}")
+    if not contracts_pass:
+        # Show which contract failed
+        drop_ok = any(d.get("is_drop", False) and d.get("event_count", 0) > 0 for d in raw_diagnostics)
+        bail_ok = any(d.get("is_bail", False) for d in raw_diagnostics)
+        final_bail_ok = any(d.get("is_final_bail", False) for d in raw_diagnostics)
+        failed = []
+        if not drop_ok:
+            failed.append("DROP (>0 events)")
+        if not bail_ok:
+            failed.append("BAIL (0 events)")
+        if not final_bail_ok:
+            failed.append("FINAL_BAIL (kick+crash on beat 1)")
+        if failed:
+            print(f"    (Failed contracts: {', '.join(failed)})")
 
     # Print inferred intents compactly
     intents = summary.inferred_intents
@@ -153,24 +168,26 @@ def _print_diagnostics_summary(
     print(f"\n  --- Per-bar focus bars {scenario.listen_start_bar}-{scenario.listen_end_bar} ---")
     print(f"  {'Bar':>4s}  {'Section':>14s}  {'Dens':>5s}  {'Cert':>5s}  "
           f"{'Stab':>5s}  {'Phs':>4s}  {'Conf':>5s}  {'Inferred':>12s}  "
-          f"{'Intent':>12s}  {'Events':>4s}")
+          f"{'Intent':>12s}  {'RendInt':>12s}  {'Events':>4s}  {'Notes'}")
     print(f"  {'-'*4}  {'-'*14}  {'-'*5}  {'-'*5}  {'-'*5}  "
-          f"{'-'*4}  {'-'*5}  {'-'*12}  {'-'*12}  {'-'*4}")
+          f"{'-'*4}  {'-'*5}  {'-'*12}  {'-'*12}  {'-'*8}  {'-'*4}  {'-'*30}")
     for d in raw_diagnostics:
         bar = d["bar"]
         if scenario.listen_start_bar <= bar <= scenario.listen_end_bar:
             intent = d.get("intent", "?")
             inferred = d.get("inferred_intent", intent)
+            rendered = d.get("rendered_intent", intent)
             events = d.get("event_count", 0)
             dens = d.get("density", 0)
             cert = d.get("certainty", 0)
             stab = d.get("stability", 0)
             phs = d.get("phase", 0)
             conf = d.get("confidence", 0)
+            notes = d.get("notes_summary", "")
             override = "*" if inferred != intent else " "
             print(f"  {bar:4d}  {d['section']:>14s}  {dens:5.2f}  {cert:5.2f}  "
                   f"{stab:5.2f}  {phs:4.2f}  {conf:5.2f}  "
-                  f"{inferred:>12s}  {intent:>12s}{override}  {events:4d}")
+                  f"{inferred:>12s}  {intent:>12s}{override}  {rendered:>12s}  {events:4d}  {notes}")
 
 
 def _update_and_export_summary(
