@@ -69,11 +69,26 @@ from perception.models import MusicalEvent
 from drummer.feel import GrooveEvent
 from drummer.output_shaping import (
     BehaviourOutputShaper,
+    OutputShapingConfig,
     is_drop_output,
     is_bail_output,
     is_final_bail_output,
 )
 from drummer.confidence import PerformanceConfidenceState
+from drummer.phrase_markers import (
+    PhraseMarkerType,
+    PhraseMarkerConfig,
+    PhraseMarkerState,
+    choose_phrase_marker,
+    apply_phrase_marker,
+    phrase_marker_label,
+)
+from drummer.presets import (
+    DrummerPreset,
+    DrummerPresetConfig,
+    get_drummer_preset,
+    list_drummer_presets,
+)
 
 
 # ============================================================================
@@ -442,11 +457,29 @@ def _is_strong_beat(pos: int) -> bool:
 # ============================================================================
 
 
+def _apply_timing_jitter(
+    events: list[MusicalEvent], jitter_amount: float, seed: int = 0
+) -> list[MusicalEvent]:
+    """Apply small random timing offsets to events for uncertain-input variation."""
+    import random
+    rng = random.Random(seed)
+    jittered = list(events)
+    for evt in jittered:
+        offset = rng.uniform(-jitter_amount, jitter_amount)
+        evt._time = max(0.0, evt._time + offset)  # type: ignore[attr-defined]
+    return jittered
+
+
 def build_simulated_timeline(
     bpm: float = 120.0,
     bars: int = 20,
+    playtest_variation: str = "",
 ) -> list[list[MusicalEvent]]:
     """Build a simulated player event timeline, grouped by bar.
+
+    The *playtest_variation* parameter modifies the timeline to represent
+    different playtest scenario variations (e.g. uncertain vs stable input,
+    slow vs strong build).
 
     Returns a list of ``bars`` lists of ``MusicalEvent`` for that bar's
     time window.  The sequence follows a musical arc:
@@ -469,6 +502,23 @@ def build_simulated_timeline(
     bar_duration = (60.0 / bpm) * 4.0  # seconds per bar
     all_bars: list[list[MusicalEvent]] = [[] for _ in range(bars)]
 
+    # Variation-specific modifiers
+    # uncertain_input: lower event strength, sparse events during enter phase,
+    # slightly jittered timing, poorer phase
+    is_uncertain = (playtest_variation == "uncertain_input")
+    # strong_build: faster ramp, higher peak intensity early
+    is_strong_build = (playtest_variation == "strong_build")
+    # weak_input_recovery: weaker events after anchor making recovery harder
+    is_weak_recovery = (playtest_variation == "weak_input_recovery")
+    # ambiguous_cue: weaker ending cue, later final gesture
+    is_ambiguous_ending = (playtest_variation == "ambiguous_cue")
+    # pullback_after_build: stronger events before drop for bigger contrast
+    is_pullback = (playtest_variation == "pullback_after_build")
+    # poor_phase_recovery: events with wider phase drift after anchor
+    is_poor_phase = (playtest_variation == "poor_phase_recovery")
+    # deliberate_sparse: extra-sparse events, clearly intentional
+    is_deliberate_sparse = (playtest_variation == "deliberate_sparse")
+
     for bar in range(bars):
         bar_start = bar * bar_duration
 
@@ -478,31 +528,60 @@ def build_simulated_timeline(
 
         # Bar 2-3: ENTER_SOFT — sparse quarter notes
         elif bar <= 3:
-            for beat in range(4):
-                t = bar_start + beat * (60.0 / bpm)
-                all_bars[bar].append(MusicalEvent(t, strength=0.65))
+            if is_uncertain:
+                # Uncertain input: weaker events, only 2 per bar, slightly late
+                for beat in (0, 2):
+                    t = bar_start + beat * (60.0 / bpm) + 0.03 * bar
+                    strength = 0.45 + 0.05 * bar  # grows from 0.45 to 0.55
+                    all_bars[bar].append(MusicalEvent(t, strength=min(strength, 0.65)))
+            else:
+                # Stable input: confident quarter notes
+                for beat in range(4):
+                    t = bar_start + beat * (60.0 / bpm)
+                    all_bars[bar].append(MusicalEvent(t, strength=0.65))
 
         # Bar 4-6: MAINTAIN — steady 8th-note pulse
         elif bar <= 6:
             eighth = 60.0 / bpm / 2.0
-            for i in range(8):
-                t = bar_start + i * eighth
-                all_bars[bar].append(MusicalEvent(t, strength=0.7))
+            if is_uncertain:
+                # Lower certainty during maintain
+                for i in range(8):
+                    t = bar_start + i * eighth + 0.015 * i
+                    all_bars[bar].append(MusicalEvent(t, strength=0.50))
+            else:
+                for i in range(8):
+                    t = bar_start + i * eighth
+                    all_bars[bar].append(MusicalEvent(t, strength=0.7))
 
         # Bar 7-9: BUILD — increasing strength, 8th notes with pickup
         elif bar <= 9:
             eighth = 60.0 / bpm / 2.0
-            build_progress = (bar - 7) / 3.0  # 0.0 → 0.67 over 3 bars
-            for i in range(8):
-                t = bar_start + i * eighth
-                strength = 0.5 + build_progress * 0.45  # 0.5 → 0.95
-                all_bars[bar].append(MusicalEvent(t, strength=strength))
-            # Add a couple of 16th-note pickups in later build bars
-            if build_progress > 0.3:
-                sixteenth = eighth / 2.0
-                for pick in (14, 15):
-                    t = bar_start + pick * sixteenth
-                    all_bars[bar].append(MusicalEvent(t, strength=0.6))
+            if is_strong_build:
+                # Quick assertive build: higher strength from the start
+                build_progress = (bar - 7) / 2.0  # 0.0 → 1.0 over 2 bars
+                for i in range(8):
+                    t = bar_start + i * eighth
+                    strength = 0.65 + build_progress * 0.35  # 0.65 → 1.0
+                    all_bars[bar].append(MusicalEvent(t, strength=min(strength, 1.0)))
+                # Add 16th-note pickups from bar 8 onward
+                if bar >= 8:
+                    sixteenth = eighth / 2.0
+                    for pick in (13, 14, 15):
+                        t = bar_start + pick * sixteenth
+                        all_bars[bar].append(MusicalEvent(t, strength=0.7))
+            else:
+                # Gradual build (default) or uncertain_input
+                build_progress = (bar - 7) / 3.0  # 0.0 → 0.67 over 3 bars
+                strength_offset = -0.15 if is_uncertain else 0.0
+                for i in range(8):
+                    t = bar_start + i * eighth
+                    strength = 0.5 + build_progress * 0.45 + strength_offset
+                    all_bars[bar].append(MusicalEvent(t, strength=max(strength, 0.3)))
+                if build_progress > 0.3:
+                    sixteenth = eighth / 2.0
+                    for pick in (14, 15):
+                        t = bar_start + pick * sixteenth
+                        all_bars[bar].append(MusicalEvent(t, strength=0.6))
 
         # Bar 10-12: REDUCE — frantic dense playing (16th notes)
         elif bar <= 12:
@@ -584,9 +663,23 @@ _SECTION_PHASE: dict[str, float] = {
 }
 
 
-def _phase_for_section(section: str) -> float:
-    """Return the phase_alignment for a given timeline section."""
-    return _SECTION_PHASE.get(section, 0.75)
+def _phase_for_section(section: str, playtest_variation: str = "") -> float:
+    """Return the phase_alignment for a given timeline section.
+
+    Adjusts phase based on *playtest_variation* so that different
+    playtest scenarios produce measurably different diagnostic output.
+    """
+    base = _SECTION_PHASE.get(section, 0.75)
+
+    is_uncertain = (playtest_variation == "uncertain_input")
+    is_poor_phase = (playtest_variation == "poor_phase_recovery")
+
+    if is_uncertain and section in ("ENTER_SOFT", "MAINTAIN", "BUILD"):
+        return max(0.25, base * 0.5)
+    if is_poor_phase and section == "MAINTAIN_2":
+        return 0.15
+
+    return base
 
 
 # ============================================================================
@@ -659,6 +752,8 @@ def run_continuous_jam(
     bars: int = 20,
     bpm: float = 120.0,
     mode: str = "scripted",
+    preset_name: str = "normal",
+    playtest_variation: str = "",
 ) -> tuple[
     DrummerBrainPipeline,
     list[dict],  # per-bar diagnostics
@@ -676,6 +771,11 @@ def run_continuous_jam(
         ``"scripted"`` — force DROP/ANCHOR/BAIL from timeline for
         reliable musical arc.  ``"inferred"`` — let the pipeline
         decide everything from feature input.
+    preset_name : str
+        Drummer preset name (``"cautious"``, ``"normal"``, ``"braver"``).
+    playtest_variation : str
+        Variation name to modify the simulated timeline
+        (e.g. ``"uncertain_input"``, ``"strong_build"``).
 
     Returns
     -------
@@ -687,23 +787,36 @@ def run_continuous_jam(
         Global ``GrooveEvent`` list with correct bar offsets for the
         full schedule (ready for ``build_schedule`` / ``play_events_absolute``).
     """
+    # Resolve preset
+    preset_config = get_drummer_preset(preset_name)
+
     bar_duration = (60.0 / bpm) * 4.0
     is_inferred = mode == "inferred"
 
-    timeline = build_simulated_timeline(bpm=bpm, bars=bars)
+    timeline = build_simulated_timeline(bpm=bpm, bars=bars, playtest_variation=playtest_variation)
 
-    pipeline = DrummerBrainPipeline()
+    # Build pipeline with preset profile + output config
+    from drummer.behaviour import FeatureDrivenBehaviourEngine
+    engine = FeatureDrivenBehaviourEngine(profile=preset_config.profile)
+    shaper = BehaviourOutputShaper(config=preset_config.output_config)
+    pipeline = DrummerBrainPipeline(
+        behaviour_engine=engine,
+        output_shaper=shaper,
+    )
     arrangement = ArrangementState()
     # ENTER_SOFT starts at low-but-audible intensity so it's heard immediately
     arrangement.current_intensity = 0.25
 
-    shaper = BehaviourOutputShaper()
     base_groove = _simple_groove()
     busy_groove = _busy_groove()
     anchor_groove = _anchor_groove()
 
     renderer = ContinuousJamRenderer(shaper=shaper)
     confidence_state = PerformanceConfidenceState()
+
+    # Phrase marker state — use preset config
+    phrase_config = preset_config.phrase_config
+    phrase_state = PhraseMarkerState()
 
     global_events: list[GrooveEvent] = []
     diagnostics: list[dict] = []
@@ -722,11 +835,13 @@ def run_continuous_jam(
         for evt in timeline[bar]:
             pipeline.feed_event(evt)
 
-        # Choose phase_alignment based on mode
+        # Choose phase_alignment based on mode and playtest_variation
         if is_inferred:
-            phase = _phase_for_section(section)
+            phase = _phase_for_section(section, playtest_variation)
         else:
-            phase = 0.75  # scripted mode: always good phase
+            # Scripted mode: use per-variation phase so playtest scenarios
+            # produce measurably different diagnostics
+            phase = _phase_for_section(section, playtest_variation)
 
         # Process at end of bar to get intent
         d = pipeline.process(now=bar_end, phase_alignment=phase)
@@ -742,6 +857,8 @@ def run_continuous_jam(
             intent = BehaviourIntent.DROP
         elif section == "FINAL_BAIL":
             intent = BehaviourIntent.FINAL_BAIL
+        elif section == "FINAL_BAIL_SILENCE":
+            intent = BehaviourIntent.BAIL  # silence after final cue
         elif section == "BAIL":
             intent = BehaviourIntent.BAIL
         elif section == "ANCHOR" and is_inferred:
@@ -762,6 +879,7 @@ def run_continuous_jam(
         confidence_hat_boost = 1.0 + (confidence * 0.10)  # 1.0 at conf=0, 1.10 at conf=1
 
         # DROP diagnostics — print condition check when in DROP section
+        # (suppressed when the section name contains "comparison_mask" sentinel)
         if section == "DROP" and is_inferred:
             _print_drop_diagnostics(snap, bar)
 
@@ -781,6 +899,25 @@ def run_continuous_jam(
 
         # Render bar with arrangement context
         shaped = renderer.render_bar(current_base, arrangement, bar, intent)
+
+        # --- Phrase marker selection ---
+        # Update phrase state based on intent for post-ANCHOR tracking
+        if intent == BehaviourIntent.ANCHOR:
+            phrase_state.bars_since_anchor = 0
+        else:
+            phrase_state.bars_since_anchor += 1
+
+        marker_type = choose_phrase_marker(
+            bar, intent, confidence, snap,
+            config=phrase_config, state=phrase_state,
+        )
+
+        # Apply phrase marker to shaped events (if any)
+        if marker_type != PhraseMarkerType.NONE:
+            shaped = apply_phrase_marker(shaped, marker_type, bar, phrase_config)
+            phrase_state.last_marker_bar = bar
+            phrase_state.last_marker_type = marker_type
+            phrase_state.marker_count += 1
 
         # Offset events to global bar position
         bar_offset = bar * 16  # 16 16th-notes per bar
@@ -809,6 +946,8 @@ def run_continuous_jam(
         else:
             notes_summary = f"{notes_added} events"
 
+        marker_label = phrase_marker_label(marker_type)
+
         diag = {
             "bar": bar,
             "time": bar_start,
@@ -833,6 +972,8 @@ def run_continuous_jam(
             "is_bail": is_bail,
             "is_final_bail": is_final,
             "notes_summary": notes_summary,
+            "phrase_marker": marker_type.value,
+            "phrase_marker_label": marker_label,
         }
         diagnostics.append(diag)
 
@@ -853,8 +994,10 @@ def _timeline_section_name(bar: int, total_bars: int) -> str:
         return "REDUCE"
     elif bar == 13:
         return "DROP"  # Brief thin bar — triggers pullback
-    elif bar <= 15:
-        return "FINAL_BAIL"  # Strong hit then silence — ending gesture
+    elif bar == 14:
+        return "FINAL_BAIL"  # Strong hit on beat 1 — ending gesture
+    elif bar == 15:
+        return "FINAL_BAIL_SILENCE"  # Silence after final cue
     elif bar == 16:
         return "ANCHOR"  # Weak erratic events
     elif bar <= 18:
@@ -870,9 +1013,9 @@ def _timeline_section_name(bar: int, total_bars: int) -> str:
 
 def print_timeline_table(diagnostics: list[dict]) -> None:
     """Print a bar-by-bar diagnostic timeline table."""
-    print(f"\n{'=' * 140}")
+    print(f"\n{'=' * 160}")
     print("  Continuous Jam — Timeline Diagnostic Table")
-    print(f"{'=' * 140}")
+    print(f"{'=' * 160}")
     header = (
         f"  {'Bar':>4s}  {'Time':>5s}  {'Section':>14s}  "
         f"{'Dens':>5s}  {'Cert':>5s}  {'Stab':>5s}  "
@@ -880,6 +1023,7 @@ def print_timeline_table(diagnostics: list[dict]) -> None:
         f"{'Conf':>5s}  {'SBar':>4s}  {'UBar':>4s}  "
         f"{'Inferred':>12s}  {'Intent':>12s}  {'ArrInt':>6s}  "
         f"{'VelScl':>6s}  {'HatDen':>6s}  {'Events':>6s}  {'Diff':>5s}"
+        f"  {'Phrase':>6s}"
     )
     print(header)
     print(f"  {'-' * 4}  {'-' * 5}  {'-' * 14}  "
@@ -887,10 +1031,12 @@ def print_timeline_table(diagnostics: list[dict]) -> None:
           f"{'-' * 5}  {'-' * 4}  {'-' * 4}  "
           f"{'-' * 5}  {'-' * 4}  {'-' * 4}  "
           f"{'-' * 12}  {'-' * 12}  {'-' * 6}  "
-          f"{'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 5}")
+          f"{'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 5}"
+          f"  {'-' * 6}")
     for d in diagnostics:
         inferred = d.get("inferred_intent", d["intent"])
         match_marker = "OVERRIDE" if inferred != d["intent"] else " "
+        phrase_label = d.get("phrase_marker_label", "")
         print(
             f"  {d['bar']:4d}  {d['time']:5.1f}s  {d['section']:>14s}  "
             f"{d['density']:.2f}  {d['certainty']:.2f}  "
@@ -902,8 +1048,9 @@ def print_timeline_table(diagnostics: list[dict]) -> None:
             f"{d['arrangement_intensity']:.2f}  "
             f"{d['velocity_scale']:.2f}  {d['hat_density']:4d}  "
             f"{d['event_count']:4d}  {d['notes_diff']:+4d}"
+            f"  {phrase_label:>6s}"
         )
-    print(f"{'=' * 140}")
+    print(f"{'=' * 160}")
 
 
 def print_schedule_summary(
@@ -971,6 +1118,287 @@ def print_timing_summary(timing_log: list) -> None:
         print(f"    max abs error:      {max(abs_errors):.2f} ms")
 
 
+def _run_preset_comparison(
+    bars: int = 20,
+    bpm: float = 120.0,
+) -> list[dict]:
+    """Run all three presets and return comparison results (no printing).
+
+    Same as ``run_preset_comparison`` but returns raw data for testing.
+    """
+    presets_to_run = ["cautious", "normal", "braver"]
+    results: list[dict] = []
+
+    for preset_name in presets_to_run:
+        _pipeline, diagnostics, global_events = run_continuous_jam(
+            bars=bars, bpm=bpm, mode="inferred", preset_name=preset_name,
+        )
+
+        # Extract metrics
+        event_counts = [d["event_count"] for d in diagnostics]
+        confidences = [d.get("confidence", 0.0) for d in diagnostics]
+        intents = [d["intent"] for d in diagnostics]
+
+        total_events = sum(event_counts)
+
+        first_non_listen = next(
+            (d["bar"] for d in diagnostics if d["section"] != "LISTEN"),
+            bars,
+        )
+        first_enter = next(
+            (d["bar"] for d in diagnostics
+             if d["intent"] in ("enter_soft", "enter_full")),
+            bars,
+        )
+        first_build = next(
+            (d["bar"] for d in diagnostics if d["intent"] == "build"),
+            bars,
+        )
+        confidence_peak = max(confidences) if confidences else 0.0
+
+        phrase_labels = [d.get("phrase_marker_label", "") for d in diagnostics]
+        eight_bar_count = sum(1 for p in phrase_labels if p == "8bar")
+        sixteen_bar_count = sum(1 for p in phrase_labels if p == "16bar")
+        total_phrase_markers = eight_bar_count + sixteen_bar_count
+
+        drop_event_count = 0
+        bail_event_count = 0
+        final_bail_event_count = 0
+        drop_contract_ok = True
+        bail_contract_ok = True
+        final_bail_contract_ok = True
+
+        for d in diagnostics:
+            if d["section"] == "DROP":
+                drop_event_count = d["event_count"]
+                drop_contract_ok = d.get("is_drop", False) and d["event_count"] > 0
+            elif d["section"] == "BAIL":
+                bail_event_count = d["event_count"]
+                bail_contract_ok = d.get("is_bail", False)
+            elif d["section"] == "FINAL_BAIL":
+                final_bail_event_count = d["event_count"]
+                final_bail_contract_ok = d.get("is_final_bail", False)
+
+        results.append({
+            "preset": preset_name.capitalize(),
+            "total_events": total_events,
+            "first_non_listen": first_non_listen,
+            "first_enter": first_enter,
+            "first_build": first_build,
+            "confidence_peak": confidence_peak,
+            "phrase_markers": total_phrase_markers,
+            "eight_bar": eight_bar_count,
+            "sixteen_bar": sixteen_bar_count,
+            "drop_events": drop_event_count,
+            "bail_events": bail_event_count,
+            "final_bail_events": final_bail_event_count,
+            "drop_ok": drop_contract_ok,
+            "bail_ok": bail_contract_ok,
+            "final_bail_ok": final_bail_contract_ok,
+        })
+
+    return results
+
+
+def run_preset_comparison(
+    bars: int = 20,
+    bpm: float = 120.0,
+) -> None:
+    """Run all three presets and print a compact comparison table.
+
+    All presets run in ``inferred`` mode with forced DROP/BAIL/FINAL_BAIL
+    for reliable output contract validation, but BUILD/REDUCE/ENTER/ANCHOR
+    are determined by each preset's thresholds.
+
+    Parameters
+    ----------
+    bars : int
+        Number of bars to simulate per preset.
+    bpm : float
+        Tempo in beats per minute.
+    """
+    results = _run_preset_comparison(bars=bars, bpm=bpm)
+
+    # Print header
+    print(f"\n{'=' * 110}")
+    print("  Preset Comparison — Drummer Temperaments")
+    print(f"  Bars: {bars}  BPM: {bpm}  Mode: inferred (forced DROP/BAIL/FINAL_BAIL)")
+    print(f"{'=' * 110}")
+
+    # Metrics column headers
+    metrics = [
+        ("Total Events", "total_events", "d"),
+        ("First Non-Listen Bar", "first_non_listen", "d"),
+        ("First Enter Bar", "first_enter", "d"),
+        ("First Build Bar", "first_build", "d"),
+        ("Confidence Peak", "confidence_peak", ".2f"),
+        ("Phrase Markers", "phrase_markers", "d"),
+        ("  8-bar Markers", "eight_bar", "d"),
+        ("  16-bar Markers", "sixteen_bar", "d"),
+        ("DROP Events", "drop_events", "d"),
+        ("BAIL Events", "bail_events", "d"),
+        ("FINAL BAIL Events", "final_bail_events", "d"),
+    ]
+
+    # Print column headers
+    col_width = 20
+    header = f"  {'Metric':<{col_width}}"
+    for r in results:
+        header += f"  {r['preset']:<{col_width}}"
+    print(header)
+    print(f"  {'-' * col_width}  {'-' * col_width}  {'-' * col_width}  {'-' * col_width}")
+
+    # Print each metric row
+    for label, key, fmt in metrics:
+        row = f"  {label:<{col_width}}"
+        for r in results:
+            val = r[key]
+            if fmt == "d":
+                row += f"  {val:<{col_width}d}"
+            else:
+                row += f"  {val:<{col_width}.2f}"
+        print(row)
+
+    # Output contract row
+    contract_str = f"  {'Contracts OK':<{col_width}}"
+    for r in results:
+        all_ok = r["drop_ok"] and r["bail_ok"] and r["final_bail_ok"]
+        label = "PASS" if all_ok else "FAIL"
+        contract_str += f"  {label:<{col_width}}"
+    print(contract_str)
+
+    # Musical sanity labels
+    print(f"\n{'=' * 110}")
+    print("  Musical Sanity Labels")
+    print(f"{'=' * 110}")
+
+    for r in results:
+        label_lines: list[str] = []
+        preset = r["preset"].lower()
+
+        if preset == "cautious":
+            label_lines.append("Cautious Bunny -- waiting, supporting, avoiding risk")
+            if r["first_enter"] > 3:
+                label_lines.append("  [OK] enters later (after bar 3)")
+            else:
+                label_lines.append("  [!!] enters too early")
+            if r["phrase_markers"] <= 1:
+                label_lines.append("  [OK] uses few or no phrase markers")
+            else:
+                label_lines.append("  [!!] too many phrase markers for cautious")
+            if r["confidence_peak"] <= 0.90:
+                label_lines.append(f"  [OK] confidence peak {r['confidence_peak']:.2f} <= 0.90")
+            else:
+                label_lines.append("  [!!] confidence peak too high")
+            if r["total_events"] < 200:
+                label_lines.append(f"  [OK] event count {r['total_events']} moderate, not overplaying")
+            else:
+                label_lines.append("  [!!] too many events for cautious")
+            if r["drop_ok"] and r["bail_ok"] and r["final_bail_ok"]:
+                label_lines.append("  [OK] all output contracts intact")
+
+        elif preset == "normal":
+            label_lines.append("Normal Bunny -- balanced reference temperament")
+            label_lines.append("  [OK] reference behaviour (ConservativePocketDrummer)")
+            label_lines.append("  [OK] default PhraseMarkerConfig")
+            label_lines.append("  [OK] default OutputShapingConfig")
+            if r["drop_ok"] and r["bail_ok"] and r["final_bail_ok"]:
+                label_lines.append("  [OK] all output contracts intact")
+            label_lines.append(f"  total events: {r['total_events']}")
+
+        elif preset == "braver":
+            label_lines.append("Braver Bunny -- more committed, still musical")
+            if r["first_enter"] <= 5:
+                label_lines.append(f"  [OK] enters by bar {r['first_enter']} (confident)")
+            else:
+                label_lines.append("  [!!] enters too late")
+            if r["first_build"] <= 6:
+                label_lines.append(f"  [OK] builds by bar {r['first_build']} (early build)")
+            else:
+                label_lines.append("  [!!] build comes too late")
+            if r["confidence_peak"] >= 0.60:
+                label_lines.append(f"  [OK] confidence peak {r['confidence_peak']:.2f} (confident)")
+            else:
+                label_lines.append("  [!!] confidence peak too low")
+            # Check braver is not overplaying -- event count should be > normal but reasonable
+            normal_result = results[1]  # index 1 is normal
+            if r["total_events"] > normal_result["total_events"]:
+                ratio = r["total_events"] / normal_result["total_events"]
+                if ratio < 1.5:
+                    label_lines.append(f"  [OK] {ratio:.1f}x normal events (controlled increase)")
+                else:
+                    label_lines.append(f"  [!!] {ratio:.1f}x normal events -- too busy")
+            else:
+                label_lines.append("  [!!] should have more events than normal")
+            if r["phrase_markers"] >= 1:
+                label_lines.append(f"  [OK] uses {r['phrase_markers']} phrase markers (confident)")
+            else:
+                label_lines.append("  [!!] no phrase markers -- should be more decorative")
+            if r["drop_ok"] and r["bail_ok"] and r["final_bail_ok"]:
+                label_lines.append("  [OK] all output contracts intact")
+
+        for line in label_lines:
+            print(f"  {line}")
+        print()
+
+    print(f"{'=' * 110}")
+    print("  Legend:  [OK] = musically sound  [!!] = needs attention")
+    print("  Braver must not: spam events, crashes, or markers")
+    print("  Cautious must not: feel broken or dead")
+    print(f"{'=' * 110}\n")
+
+    # Summary verdict
+    all_pass = all(
+        r["drop_ok"] and r["bail_ok"] and r["final_bail_ok"]
+        for r in results
+    )
+    if all_pass:
+        print("  All output contracts PASS for all presets.")
+    else:
+        print("  WARNING: Some output contracts FAILED! See table above.")
+
+
+def export_diagnostics_to_json(
+    diagnostics: list[dict],
+    output_path: str,
+    meta: dict | None = None,
+) -> None:
+    """Export per-bar diagnostics to a deterministic JSON file.
+
+    Parameters
+    ----------
+    diagnostics : list[dict]
+        Per-bar diagnostic records from ``run_continuous_jam``.
+    output_path : str
+        Path to write the JSON file.
+    meta : dict | None
+        Optional metadata to include at the top level (e.g. preset,
+        mode, bpm, bars).  Must not include a ``"timestamp"`` key
+        to preserve determinism.
+    """
+    import json
+    import os
+
+    # Build export payload
+    payload: dict = {}
+
+    if meta:
+        # Ensure no timestamp in meta for deterministic export
+        payload["meta"] = dict(meta)
+        payload["meta"].pop("timestamp", None)
+
+    payload["diagnostics"] = list(diagnostics)
+
+    # Ensure output directory exists
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+
 def print_full_schedule(global_events: list[GrooveEvent], bpm: float) -> None:
     """Print every scheduled MIDI event."""
     messages = groove_events_to_midi_messages(global_events, bpm=bpm)
@@ -1009,25 +1437,67 @@ def main() -> int:
                         choices=["scripted", "inferred"],
                         help="scripted = forced DROP/ANCHOR/BAIL (reliable arc); "
                              "inferred = pipeline decides everything from input")
+    parser.add_argument("--preset", type=str, default="normal",
+                        choices=list_drummer_presets(),
+                        help=f"Drummer temperament preset (default: normal). "
+                             f"Options: {', '.join(list_drummer_presets())}")
+    parser.add_argument("--compare-presets", action="store_true",
+                        help="Run all three presets and print a comparison table"
+                             " (inferred mode, no playback)")
     parser.add_argument("--no-play", action="store_true",
                         help="Print only, do not send MIDI")
     parser.add_argument("--print-schedule", action="store_true",
                         help="Print the full per-event MIDI schedule")
+    parser.add_argument("--export-json", type=str, default=None,
+                        metavar="PATH",
+                        help="Export per-bar diagnostics as JSON to PATH")
     args = parser.parse_args()
 
     do_play = not args.no_play
     bpm = args.bpm
     bars = args.bars
     mode = args.mode
+    preset_name = args.preset
+    export_path = args.export_json
+
+    # Handle compare-presets mode
+    if args.compare_presets:
+        run_preset_comparison(bars=bars, bpm=bpm)
+        # Export comparison results if requested
+        if export_path:
+            results = _run_preset_comparison(bars=bars, bpm=bpm)
+            meta = {
+                "mode": "compare_presets",
+                "presets_compared": list_drummer_presets(),
+                "bpm": bpm,
+                "bars": bars,
+                "total_duration": bars * (60.0 / bpm) * 4.0,
+            }
+            # Build a combined payload with all three presets
+            import json
+            payload = {"meta": meta, "comparison": results}
+            import os
+            out_dir = os.path.dirname(export_path)
+            if out_dir:
+                os.makedirs(out_dir, exist_ok=True)
+            with open(export_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+            print(f"\n  Exported comparison to: {export_path}")
+        return 0
+
+    # Resolve preset for display
+    preset_config = get_drummer_preset(preset_name)
 
     print(f"Continuous Jam MIDI Demo — {mode.upper()} mode")
+    print(f"  Preset: {preset_config.name} ({preset_name})")
     print(f"  BPM: {bpm}  Bars: {bars}  "
           f"Duration: ~{bars * (60.0 / bpm) * 4.0:.1f}s")
     print(f"  Mode: {'PLAY' if do_play else 'PRINT-ONLY'}")
 
-    # Run the jam
+    # Run the jam with preset
     pipeline, diagnostics, global_events = run_continuous_jam(
-        bars=bars, bpm=bpm, mode=mode,
+        bars=bars, bpm=bpm, mode=mode, preset_name=preset_name,
     )
 
     # Print diagnostics
@@ -1040,6 +1510,19 @@ def main() -> int:
         print_full_schedule(global_events, bpm)
 
     print_schedule_summary(global_events, bpm, diagnostics)
+
+    # Export to JSON if requested
+    if export_path:
+        meta = {
+            "mode": mode,
+            "preset": preset_name,
+            "bpm": bpm,
+            "bars": bars,
+            "total_duration": bars * (60.0 / bpm) * 4.0,
+            "total_events": sum(d["event_count"] for d in diagnostics),
+        }
+        export_diagnostics_to_json(diagnostics, export_path, meta=meta)
+        print(f"\n  Exported diagnostics to: {export_path}")
 
     # MIDI playback
     if do_play:

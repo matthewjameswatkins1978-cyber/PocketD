@@ -203,6 +203,16 @@ cython_debug/
 # Temporary file for partial code execution
 tempCodeRunnerFile.py
 
+# Generated playtest artifacts
+playtest_feedback.jsonl
+playtest_learning_summary.md
+playtest_*.json
+preset_compare.json
+artifacts/
+
+# Accidental workspace files under tests/
+tests/*.code-workspace
+
 # Ruff stuff:
 .ruff_cache/
 
