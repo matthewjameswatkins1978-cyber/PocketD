@@ -117,22 +117,32 @@ class DrummerProfile:
     anchor_certainty_threshold: float = 0.40
     anchor_repetition_threshold: float = 0.35
     anchor_phase_threshold: float = 0.45
+    anchor_min_bars: int = 1
+    """Minimum number of bars ANCHOR must hold before recovery is allowed."""
+    anchor_recovery_certainty_threshold: float = 0.50
+    """Certainty must reach this level to recover from ANCHOR."""
+    anchor_recovery_phase_threshold: float = 0.60
+    """Phase must reach this level to recover from ANCHOR."""
+    anchor_recovery_stability_threshold: float = 0.60
+    """Repetition stability must reach this level to recover from ANCHOR."""
+    anchor_recovery_max_density: float = 0.75
+    """Density must be below this for ANCHOR recovery (not frantic)."""
     feature_bail_silence_seconds: float = 1.50
     feature_hysteresis_margin: float = 0.10
 
     # Stage 4 — DROP inference thresholds
-    drop_density_threshold: float = 0.20
-    """Density below this value indicates a deliberate energy pullback."""
+    drop_density_threshold: float = 0.70
+    """Max density for DROP — below frantic, still allows regular 8th notes."""
     drop_silence_min_seconds: float = 0.05
-    """Minimum silence duration to consider DROP (0 = no minimum gap needed)."""
+    """Minimum silence duration to consider DROP."""
     drop_silence_max_seconds: float = 1.50
-    """Maximum silence for DROP — longer silence triggers BAIL instead."""
+    """Max silence — longer triggers BAIL."""
     drop_change_threshold: float = 0.04
     """Change_score above this indicates a deliberate shift."""
-    drop_min_certainty_threshold: float = 0.35
-    """Minimum player certainty for DROP (below this is ANCHOR territory)."""
+    drop_min_certainty_threshold: float = 0.20
+    """Min certainty for DROP — DROP can use recent confidence even if sparse."""
     drop_phase_threshold: float = 0.50
-    """Phase alignment must meet or exceed this to consider DROP."""
+    """Phase alignment must meet or exceed this for DROP."""
 
     # Stage 4 — FINAL_BAIL thresholds
     final_bail_change_threshold: float = 0.20
@@ -190,6 +200,11 @@ ConservativePocketDrummer = DrummerProfile(
     anchor_certainty_threshold=0.40,
     anchor_repetition_threshold=0.35,
     anchor_phase_threshold=0.45,
+    anchor_min_bars=1,
+    anchor_recovery_certainty_threshold=0.50,
+    anchor_recovery_phase_threshold=0.60,
+    anchor_recovery_stability_threshold=0.60,
+    anchor_recovery_max_density=0.75,
     feature_bail_silence_seconds=1.50,
     feature_hysteresis_margin=0.10,
 )
@@ -1053,6 +1068,8 @@ class FeatureDrivenBehaviourEngine:
         # Confirmation tracking
         self._enter_confirmation_count: int = 0
         self._same_intent_count: int = 0
+        self._anchor_bar_count: int = 0
+        """Number of bars spent in ANCHOR (for minimum hold time enforcement)."""
 
         # Timestamp tracking
         self._last_eval_time: float = 0.0
@@ -1101,10 +1118,20 @@ class FeatureDrivenBehaviourEngine:
 
         # 3. Priority-ordered dynamic decisions after entry
         # ANCHOR — protect the pocket when player is uncertain (highest)
+
+        # Increment anchor bar count if we're currently anchoring
+        if self.previous_intent == BehaviourIntent.ANCHOR:
+            self._anchor_bar_count += 1
+
         anchor = self._check_anchor(snapshot)
         if anchor is not None:
-            self._record_intent_change(anchor.intent)
-            return anchor
+            # ANCHOR was entered or is active — check if we can recover
+            if self._check_anchor_recovery(snapshot):
+                # Recovery conditions met — fall through to non-ANCHOR decisions
+                self._anchor_bar_count = 0
+            else:
+                self._record_intent_change(anchor.intent)
+                return anchor
 
         # REDUCE — density inversion (player too busy)
         reduce_ = self._check_feature_reduce(snapshot)
@@ -1140,6 +1167,7 @@ class FeatureDrivenBehaviourEngine:
         self.last_snapshot = None
         self._enter_confirmation_count = 0
         self._same_intent_count = 0
+        self._anchor_bar_count = 0
         self._last_eval_time = 0.0
         self.entered_at = None
 
@@ -1370,6 +1398,39 @@ class FeatureDrivenBehaviourEngine:
         )
 
     # ------------------------------------------------------------------
+    # ANCHOR recovery — exit ANCHOR when player regains stability
+    # ------------------------------------------------------------------
+
+    def _check_anchor_recovery(self, snap) -> bool:
+        """Check if the player has recovered enough to leave ANCHOR.
+
+        Returns True if:
+        * Minimum ANCHOR hold time (anchor_min_bars) has passed
+        * player_certainty >= anchor_recovery_certainty_threshold
+        * phase_alignment >= anchor_recovery_phase_threshold (if available)
+        * repetition_stability >= anchor_recovery_stability_threshold
+        * input_density <= anchor_recovery_max_density (not frantic)
+        """
+        profile = self.profile
+
+        # Must have been in ANCHOR for minimum bars
+        if self._anchor_bar_count < profile.anchor_min_bars:
+            return False
+
+        certainty = snap.player_certainty
+        stability = snap.repetition_stability
+        phase = snap.phase_alignment
+        density = snap.input_density
+
+        # Check all recovery conditions
+        certain_enough = certainty >= profile.anchor_recovery_certainty_threshold
+        stable_enough = stability >= profile.anchor_recovery_stability_threshold
+        phase_ok = phase is None or phase >= profile.anchor_recovery_phase_threshold
+        not_frantic = density <= profile.anchor_recovery_max_density
+
+        return certain_enough and stable_enough and phase_ok and not_frantic
+
+    # ------------------------------------------------------------------
     # Feature BUILD logic
     # ------------------------------------------------------------------
 
@@ -1494,7 +1555,11 @@ class FeatureDrivenBehaviourEngine:
         if self.previous_intent == BehaviourIntent.REDUCE:
             exit_threshold = profile.reduce_density_threshold - profile.feature_hysteresis_margin
             if density >= exit_threshold:
-                # Still busy — stay in REDUCE
+                # Still busy — check if DROP conditions override REDUCE
+                # DROP represents a deliberate pullback that should take
+                # priority over REDUCE when density is collapsing with intent
+                if density < profile.drop_density_threshold and snap.change_score >= profile.drop_change_threshold:
+                    return None  # Let DROP take over
                 return BehaviourDecision(
                     intent=BehaviourIntent.REDUCE,
                     confidence=min(1.0, density / profile.reduce_density_threshold),

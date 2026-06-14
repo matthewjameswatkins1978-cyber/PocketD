@@ -14,6 +14,13 @@ Design contract
 * Timing is preserved — shaping only alters velocity and articulation.
 * ``humanize_amount`` scales all velocity/articulation modifications
   from 0.0 (pure machine grid) to 1.0 (full expression).
+
+Behaviour output rules
+----------------------
+* DROP:  must produce > 0 events, usually 1–2 sparse kicks.  No crash.
+* BAIL:  must produce exactly 0 events (song is over).
+* FINAL_BAIL:  must produce exactly 2 events: kick (note 36) + crash (note 49)
+  on beat 1 (grid_position 0), then no further notes.
 """
 
 from __future__ import annotations
@@ -94,6 +101,84 @@ class OutputShapingConfig:
     # Ghost note identification
     ghost_max_velocity: int = 35
     """Notes with velocity at or below this are considered ghost-velocity."""
+
+    # DROP output tuning
+    drop_kick_velocity: int = 100
+    """Velocity for kick note(s) during DROP."""
+    drop_num_kicks: int = 1
+    """Number of kick pulses during DROP (1 or 2)."""
+    drop_kick_grid_positions: tuple = (0, 8)
+    """Grid positions (16th-note) for DROP kicks.
+    Default (0, 8) → beat 1 and beat 3.  Only first ``drop_num_kicks`` used."""
+
+    # FINAL_BAIL output tuning
+    final_bail_kick_velocity: int = 110
+    """Velocity for the kick on the final hit."""
+    final_bail_crash_velocity: int = 110
+    """Velocity for the crash on the final hit."""
+    final_bail_kick_grid: int = 0
+    """Grid position for the kick (beat 1)."""
+    final_bail_crash_grid: int = 0
+    """Grid position for the crash (beat 1, same hit)."""
+
+
+# ---------------------------------------------------------------------------
+# Output-validation helpers
+# ---------------------------------------------------------------------------
+
+
+def is_drop_output(events: list[GrooveEvent]) -> bool:
+    """Confirm events look like a DROP output.
+
+    DROP must have:
+    * event count > 0
+    * event count <= 2 (or very sparse — no full groove)
+    * no crash
+    * no full hats
+    * no normal groove (only kick allowed, optionally snare at very low vel)
+    """
+    if not events:
+        return False
+    if len(events) > 2:
+        # More than 2 events is not "sparse" — fail
+        return False
+    for evt in events:
+        group = _instrument_group(evt.instrument)
+        if group == "crash":
+            return False
+        if group in ("hi_hat", "ride") and evt.velocity > 40:
+            # Hats/ride with moderate velocity suggest full groove
+            return False
+        if group == "snare" and evt.velocity > 50:
+            return False
+    # At least one kick is expected
+    has_kick = any(_instrument_group(e.instrument) == "kick" for e in events)
+    return has_kick
+
+
+def is_bail_output(events: list[GrooveEvent]) -> bool:
+    """Confirm events look like a BAIL output (exactly 0 events)."""
+    return len(events) == 0
+
+
+def is_final_bail_output(events: list[GrooveEvent]) -> bool:
+    """Confirm events look like a FINAL_BAIL output.
+
+    FINAL_BAIL must have:
+    * exactly 2 events
+    * one kick (group "kick")
+    * one crash (group "crash")
+    * both on grid_position 0 (beat 1)
+    """
+    if len(events) != 2:
+        return False
+    groups = [_instrument_group(e.instrument) for e in events]
+    if "kick" not in groups or "crash" not in groups:
+        return False
+    for evt in events:
+        if evt.grid_position != 0:
+            return False
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -205,12 +290,16 @@ class BehaviourOutputShaper:
         list[GrooveEvent]
             Shaped events, sorted by grid_position then bar_index.
         """
-        # ANCHOR needs to be able to generate pulse from empty input
-        if intent != BehaviourIntent.ANCHOR and not events:
-            return []
-
         # Dispatch to intent-specific shaper
-        if intent == BehaviourIntent.MAINTAIN:
+        # DROP, BAIL, FINAL_BAIL all produce their own output from scratch
+        # regardless of input events (the input groove is discarded).
+        if intent == BehaviourIntent.DROP:
+            result = self._shape_drop()
+        elif intent == BehaviourIntent.BAIL:
+            result = self._shape_bail(events)
+        elif intent == BehaviourIntent.FINAL_BAIL:
+            result = self._shape_final_bail()
+        elif intent == BehaviourIntent.MAINTAIN:
             result = self._shape_maintain(events)
         elif intent == BehaviourIntent.REDUCE:
             result = self._shape_reduce(events)
@@ -220,8 +309,6 @@ class BehaviourOutputShaper:
             result = self._shape_build(events)
         elif intent in (BehaviourIntent.ENTER_SOFT, BehaviourIntent.ENTER_FULL):
             result = self._shape_enter(events)
-        elif intent in (BehaviourIntent.BAIL, BehaviourIntent.DROP):
-            result = self._shape_bail(events)
         else:
             # LISTEN, FILL, CRASH, etc. — pass through unchanged
             result = list(events)
@@ -229,6 +316,56 @@ class BehaviourOutputShaper:
         # Always sort output by bar_index then grid_position
         result.sort(key=lambda e: (e.bar_index, e.grid_position))
         return result
+
+    # ------------------------------------------------------------------
+    # DROP — sparse kick pulses (1–2 events, no crash)
+    # ------------------------------------------------------------------
+
+    def _shape_drop(self) -> list[GrooveEvent]:
+        """DROP returns 1–2 sparse kick pulses, no crash, no hats, no snare.
+
+        The drummer is still active but playing very sparsely.
+        """
+        cfg = self.config
+        num_kicks = max(1, min(2, cfg.drop_num_kicks))
+        positions = cfg.drop_kick_grid_positions[:num_kicks]
+        return [
+            GrooveEvent(
+                instrument="kick",
+                grid_position=pos,
+                velocity=cfg.drop_kick_velocity,
+                articulation="default",
+                source_role="main",
+            )
+            for pos in positions
+        ]
+
+    # ------------------------------------------------------------------
+    # FINAL_BAIL — kick + crash on beat 1, then stop
+    # ------------------------------------------------------------------
+
+    def _shape_final_bail(self) -> list[GrooveEvent]:
+        """FINAL_BAIL returns exactly kick + crash on beat 1 (grid 0).
+
+        The drummer thinks this is a deliberate ending.
+        """
+        cfg = self.config
+        return [
+            GrooveEvent(
+                instrument="kick",
+                grid_position=cfg.final_bail_kick_grid,
+                velocity=cfg.final_bail_kick_velocity,
+                articulation="default",
+                source_role="main",
+            ),
+            GrooveEvent(
+                instrument="crash",
+                grid_position=cfg.final_bail_crash_grid,
+                velocity=cfg.final_bail_crash_velocity,
+                articulation="default",
+                source_role="main",
+            ),
+        ]
 
     # ------------------------------------------------------------------
     # MAINTAIN — preserve the pocket (machine-tight unless humanized)
@@ -457,9 +594,9 @@ class BehaviourOutputShaper:
         return result
 
     # ------------------------------------------------------------------
-    # BAIL / DROP — suppress completely
+    # BAIL — song is over, output 0 events
     # ------------------------------------------------------------------
 
     def _shape_bail(self, events: list[GrooveEvent]) -> list[GrooveEvent]:
-        """BAIL and DROP return an empty output list."""
+        """BAIL returns an empty output list — the song is over."""
         return []

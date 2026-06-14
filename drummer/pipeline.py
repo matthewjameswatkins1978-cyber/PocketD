@@ -177,8 +177,8 @@ class DrummerBrainPipeline:
         intent = behaviour_decision.intent
 
         # Step 3 — Get raw groove
-        # For LISTEN and BAIL → no groove
-        if intent in (BehaviourIntent.LISTEN, BehaviourIntent.BAIL):
+        # For LISTEN, BAIL, and FINAL_BAIL → no groove (output shaper generates from scratch)
+        if intent in (BehaviourIntent.LISTEN, BehaviourIntent.BAIL, BehaviourIntent.FINAL_BAIL):
             raw_events: list[GrooveEvent] = []
         else:
             raw_events = list(self._groove_provider())

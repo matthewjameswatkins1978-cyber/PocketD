@@ -15,6 +15,7 @@ from drummer.behaviour import BehaviourIntent
 from drummer.output_shaping import (
     BehaviourOutputShaper,
     OutputShapingConfig,
+    is_drop_output,
     _beat_in_bar,
     _is_eighth_note,
     _is_ghost,
@@ -420,11 +421,16 @@ class TestBailDrop:
         result = shaper.shape(events, BehaviourIntent.BAIL)
         assert result == []
 
-    def test_drop_returns_empty(self) -> None:
+    def test_drop_returns_minimal_kick(self) -> None:
         shaper = BehaviourOutputShaper()
         events = _basic_groove()
         result = shaper.shape(events, BehaviourIntent.DROP)
-        assert result == []
+        # DROP returns 1–2 sparse kicks, not empty
+        assert len(result) >= 1
+        assert len(result) <= 2
+        for e in result:
+            assert _is_kick(e), "DROP should only contain kick"
+        assert is_drop_output(result)
 
     def test_bail_on_empty(self) -> None:
         shaper = BehaviourOutputShaper()
