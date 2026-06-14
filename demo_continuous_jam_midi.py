@@ -4,11 +4,26 @@ Simulates a single continuous player-input timeline and lets the
 `DrummerBrainPipeline` respond bar-by-bar while a continuous drum
 stream plays.  No pauses between behaviour states.
 
-| Run::
-|     python demo_continuous_jam_midi.py                    # play the jam
-|     python demo_continuous_jam_midi.py --no-play          # print only
-|     python demo_continuous_jam_midi.py --print-schedule   # print full schedule
-|     python demo_continuous_jam_midi.py --bpm 100 --bars 12
+Run::
+    python demo_continuous_jam_midi.py                    # scripted jam (default)
+    python demo_continuous_jam_midi.py --mode inferred    # inference mode
+    python demo_continuous_jam_midi.py --no-play          # print only
+    python demo_continuous_jam_midi.py --print-schedule   # print full schedule
+    python demo_continuous_jam_midi.py --bpm 100 --bars 12
+
+Modes
+-----
+``scripted`` (default):
+    Uses hardcoded intent overrides for DROP, ANCHOR, and BAIL to
+    guarantee a musically reliable arc.  BUILD and REDUCE are still
+    inferred from feature input.  This is the "sounds good" reference.
+
+``inferred``:
+    Lets the ``FeatureMonitor`` → ``FeatureDrivenBehaviourEngine`` →
+    ``ArrangementState`` pipeline decide *all* behaviour from the
+    simulated player input.  Phase alignment is varied per section
+    to test ANCHOR / BAIL inference.  No intent overrides are applied
+    except BAIL (which the engine handles natively from silence).
 
 Design
 ------
@@ -403,12 +418,11 @@ def build_simulated_timeline(
     0–1     LISTEN    silence      No player events — pipeline listens.
     2–3     ENTER     sparse       Sparse but steady quarter notes.
     4–6     MAINTAIN  steady       Regular 8th-note pulse, good phase.
-    7–10    BUILD     rising       Increasing strength, dense events.
-    11–12   REDUCE    frantic      Overly dense events → force REDUCE.
-    13      DROP      weak         Weak erratic → may trigger DROP.
-    14–16   ANCHOR    erratic      Weak, poor phase → ANCHOR.
-    17–18   MAINTAIN  steady       Stabilised play → MAINTAIN.
-    19+     BAIL      silence      No events → silence → BAIL.
+    7–9     BUILD     rising       Increasing strength, 8th notes + pickups.
+    10–12   REDUCE    frantic      Overly dense 16th-note events.
+    13      DROP      weak         Weak erratic, short bar.
+    14–16   ANCHOR    erratic      Weak, irregular timing.
+    17+     BAIL      silence      No events — silence.
     ======  ========  ===========  =====================================
     """
     bar_duration = (60.0 / bpm) * 4.0  # seconds per bar
@@ -449,18 +463,19 @@ def build_simulated_timeline(
                     t = bar_start + pick * sixteenth
                     all_bars[bar].append(MusicalEvent(t, strength=0.6))
 
-        # Bar 10-12: REDUCE — frantic dense playing
-        elif bar <= 12:
+        # Bar 10-11: REDUCE — frantic dense playing (16th notes)
+        elif bar <= 11:
             sixteenth = 60.0 / bpm / 4.0
             for i in range(16):
                 t = bar_start + i * sixteenth
                 all_bars[bar].append(MusicalEvent(t, strength=0.7))
 
-        # Bar 13: DROP — weak erratic (positions clamped to bar duration)
-        elif bar == 13:
-            for i, pos in enumerate([0.0, 0.4, 0.8, 1.1, 1.3, 1.6, 1.8, 1.95]):
+        # Bar 12: DROP — well-spaced deliberate hits to maintain
+        # player_certainty above anchor threshold while density drops
+        elif bar == 12:
+            for pos in [0.0, 0.8, 1.6, 1.95]:
                 t = bar_start + pos
-                all_bars[bar].append(MusicalEvent(t, strength=0.1 + 0.05 * (i % 3)))
+                all_bars[bar].append(MusicalEvent(t, strength=0.55))
 
         # Bar 14-16: ANCHOR — weak erratic, poor phase (positions clamped to bar)
         elif bar <= 16:
@@ -475,6 +490,83 @@ def build_simulated_timeline(
 
 
 # ============================================================================
+# Phase alignment lookup per section
+# ============================================================================
+# In inferred mode, we vary phase_alignment to test the engine's
+# ability to detect poor phase and trigger ANCHOR / BAIL from
+# realistic feature input rather than forced overrides.
+
+_SECTION_PHASE: dict[str, float] = {
+    "LISTEN": 0.75,       # listener phase is neutral
+    "ENTER_SOFT": 0.75,   # good phase during entry
+    "MAINTAIN": 0.75,     # stable groove = good phase
+    "BUILD": 0.70,        # slightly looser but still controlled
+    "REDUCE": 0.50,       # busy playing drifts phase a bit
+    "DROP": 0.60,         # deliberate pullback, still musical
+    "ANCHOR": 0.20,       # weak/erratic = very poor phase
+    "MAINTAIN_2": 0.65,   # recovering phase
+    "BAIL": 0.75,         # silent — neutral
+}
+
+
+def _print_drop_diagnostics(snap, bar: int) -> None:
+    """Print DROP condition pass/fail for the current snapshot."""
+    from drummer.behaviour import ConservativePocketDrummer as Profile
+
+    d = snap.input_density
+    c = snap.change_score
+    s = snap.silence_duration
+    p = snap.player_certainty
+    ph = snap.phase_alignment or 0.0
+
+    checks = [
+        ("density <= 0.30", d, d <= Profile.drop_density_threshold, Profile.drop_density_threshold),
+        ("change >= 0.12", c, c >= Profile.drop_change_threshold, Profile.drop_change_threshold),
+        ("certainty >= 0.35", p, p >= Profile.drop_min_certainty_threshold, Profile.drop_min_certainty_threshold),
+        ("silence <= 1.50", s, s <= Profile.drop_silence_max_seconds, Profile.drop_silence_max_seconds),
+        ("phase >= 0.50", ph, ph >= Profile.drop_phase_threshold, Profile.drop_phase_threshold),
+    ]
+    print(f"\n  >>> DROP diagnostics (bar {bar}):")
+    for label, val, passed, threshold in checks:
+        status = "PASS" if passed else "FAIL"
+        print(f"      {status:4s}  {label:25s}  value={val:.3f}  threshold={threshold:.3f}")
+
+
+def _phase_for_section(section: str) -> float:
+    """Return the phase_alignment for a given timeline section."""
+    return _SECTION_PHASE.get(section, 0.75)
+
+
+# ============================================================================
+# Intent override audit (for scripted mode)
+#
+# In scripted mode, three intents are forced from the timeline:
+#
+#   DROP   — currently NOT inferred by the engine (no energy-trend-based
+#            DROP rule fires with static-strength events).  Forced to
+#            produce a musically clear "thinning to silence" gesture.
+#
+#   ANCHOR — requires player_certainty < 0.40 OR repetition_stability
+#            < 0.35 OR phase_alignment < 0.45.  With the current
+#            simulated input (weak timing but phase_alignment always
+#            0.75), only certainty drops enough.  We force it so the
+#            ANCHOR rendering path is exercised reliably in scripted
+#            mode.  In inferred mode, phase is lowered to 0.20 so
+#            ANCHOR should fire naturally.
+#
+#   BAIL   — requires has_entered=True AND silence_duration >
+#            feature_bail_silence_seconds (1.50).  The timeline
+#            processes at bar-end (2s gaps), which exceeds the
+#            threshold — so BAIL *should* fire naturally after
+#            active bars.  In scripted mode we force it for clarity.
+#            In inferred mode we let the engine handle it.
+#
+# BUILD and REDUCE are fully inferred in both modes from
+# change_score / input_density respectively.
+# ============================================================================
+
+
+# ============================================================================
 # Continuous jam — core orchestration
 # ============================================================================
 
@@ -482,12 +574,24 @@ def build_simulated_timeline(
 def run_continuous_jam(
     bars: int = 16,
     bpm: float = 120.0,
+    mode: str = "scripted",
 ) -> tuple[
     DrummerBrainPipeline,
     list[dict],  # per-bar diagnostics
     list[GrooveEvent],  # global schedule
 ]:
     """Run one continuous jam and return pipeline, diagnostics, schedule.
+
+    Parameters
+    ----------
+    bars : int
+        Number of bars to simulate.
+    bpm : float
+        Tempo in beats per minute.
+    mode : str
+        ``"scripted"`` — force DROP/ANCHOR/BAIL from timeline for
+        reliable musical arc.  ``"inferred"`` — let the pipeline
+        decide everything from feature input.
 
     Returns
     -------
@@ -500,7 +604,7 @@ def run_continuous_jam(
         full schedule (ready for ``build_schedule`` / ``play_events_absolute``).
     """
     bar_duration = (60.0 / bpm) * 4.0
-    phase_alignment = 0.75
+    is_inferred = mode == "inferred"
 
     timeline = build_simulated_timeline(bpm=bpm, bars=bars)
 
@@ -525,26 +629,41 @@ def run_continuous_jam(
         bar_start = bar * bar_duration
         bar_end = bar_start + bar_duration
 
+        # Determine section name from timeline (used for diagnostics)
+        section = _timeline_section_name(bar, bars)
+
         # Feed events for this bar's time window
         for evt in timeline[bar]:
             pipeline.feed_event(evt)
 
+        # Choose phase_alignment based on mode
+        if is_inferred:
+            phase = _phase_for_section(section)
+        else:
+            phase = 0.75  # scripted mode: always good phase
+
         # Process at end of bar to get intent
-        d = pipeline.process(now=bar_end, phase_alignment=phase_alignment)
-        intent = d.behaviour_intent
+        d = pipeline.process(now=bar_end, phase_alignment=phase)
+        inferred_intent = d.behaviour_intent
         snap = d.feature_snapshot
 
-        # Determine section name from timeline (used for diagnostics only)
-        section = _timeline_section_name(bar, bars)
+        # In scripted mode, override specific intents from timeline
+        if not is_inferred:
+            if section in ("DROP", "ANCHOR"):
+                intent = BehaviourIntent(section.lower())
+            elif section == "BAIL":
+                intent = BehaviourIntent.BAIL
+            elif section == "FINAL_BAIL":
+                intent = BehaviourIntent.FINAL_BAIL
+            else:
+                intent = inferred_intent
+        else:
+            # Inferred mode: use what the pipeline decided
+            intent = inferred_intent
 
-        # Override intent from timeline for sections that need predictable
-        # behaviour regardless of feature monitor state (DROP, ANCHOR, BAIL).
-        # The pipeline still runs — we just use the timeline section as the
-        # arrangement driver so the musical arc is reliable.
-        if section in ("DROP", "ANCHOR"):
-            intent = BehaviourIntent(section.lower())
-        elif section == "BAIL":
-            intent = BehaviourIntent.BAIL
+        # DROP diagnostics — print condition check when in DROP section
+        if section == "DROP" and is_inferred:
+            _print_drop_diagnostics(snap, bar)
 
         # Update arrangement state (advance ramp FIRST so render sees updated intensity)
         arrangement.update_intent(intent, bar)
@@ -584,6 +703,9 @@ def run_continuous_jam(
             "certainty": snap.player_certainty,
             "stability": snap.repetition_stability,
             "change_score": snap.change_score,
+            "silence": snap.silence_duration,
+            "phase": phase,
+            "inferred_intent": inferred_intent.value,
             "intent": intent.value,
             "arrangement_intensity": arrangement.current_intensity,
             "velocity_scale": arrangement.current_velocity_scale,
@@ -609,7 +731,7 @@ def _timeline_section_name(bar: int, total_bars: int) -> str:
     elif bar <= 11:
         return "REDUCE"
     elif bar == 12:
-        return "DROP"
+        return "DROP"  # immediate pullback, sparse hits
     elif bar <= 14:
         return "ANCHOR"
     elif bar <= 16:
@@ -625,30 +747,36 @@ def _timeline_section_name(bar: int, total_bars: int) -> str:
 
 def print_timeline_table(diagnostics: list[dict]) -> None:
     """Print a bar-by-bar diagnostic timeline table."""
-    print(f"\n{'=' * 110}")
+    print(f"\n{'=' * 135}")
     print("  Continuous Jam — Timeline Diagnostic Table")
-    print(f"{'=' * 110}")
+    print(f"{'=' * 135}")
     header = (
         f"  {'Bar':>4s}  {'Time':>5s}  {'Section':>14s}  "
         f"{'Dens':>5s}  {'Cert':>5s}  {'Stab':>5s}  "
-        f"{'Chg':>5s}  {'Intent':>12s}  {'ArrInt':>6s}  "
+        f"{'Chg':>5s}  {'Sil':>4s}  {'Phs':>4s}  "
+        f"{'Inferred':>12s}  {'Intent':>12s}  {'ArrInt':>6s}  "
         f"{'VelScl':>6s}  {'HatDen':>6s}  {'Events':>6s}  {'Diff':>5s}"
     )
     print(header)
     print(f"  {'-' * 4}  {'-' * 5}  {'-' * 14}  "
           f"{'-' * 5}  {'-' * 5}  {'-' * 5}  "
-          f"{'-' * 5}  {'-' * 12}  {'-' * 6}  "
+          f"{'-' * 5}  {'-' * 4}  {'-' * 4}  "
+          f"{'-' * 12}  {'-' * 12}  {'-' * 6}  "
           f"{'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 5}")
     for d in diagnostics:
+        inferred = d.get("inferred_intent", d["intent"])
+        match_marker = "OVERRIDE" if inferred != d["intent"] else " "
         print(
             f"  {d['bar']:4d}  {d['time']:5.1f}s  {d['section']:>14s}  "
             f"{d['density']:.2f}  {d['certainty']:.2f}  "
             f"{d['stability']:.2f}  {d['change_score']:.2f}  "
-            f"{d['intent']:>12s}  {d['arrangement_intensity']:.2f}  "
+            f"{d.get('silence', 0.0):3.1f}  {d.get('phase', 0.0):3.2f}  "
+            f"{inferred:>12s}  {d['intent']:>12s}{match_marker}  "
+            f"{d['arrangement_intensity']:.2f}  "
             f"{d['velocity_scale']:.2f}  {d['hat_density']:4d}  "
             f"{d['event_count']:4d}  {d['notes_diff']:+4d}"
         )
-    print(f"{'=' * 110}")
+    print(f"{'=' * 135}")
 
 
 def print_schedule_summary(
@@ -691,9 +819,12 @@ def print_schedule_summary(
     print(f"\n  Per-bar event counts:")
     for d in diagnostics:
         bar_label = f"bar {d['bar']:2d}"
+        inferred = d.get("inferred_intent", d["intent"])
+        override = " (scripted)" if inferred != d["intent"] else ""
         print(f"    {bar_label:>8s}  {d['section']:>14s}  "
               f"{d['event_count']:3d} events  "
-              f"(intent={d['intent']:>12s}  intensity={d['arrangement_intensity']:.2f})")
+              f"(inferred={inferred:>12s}  intent={d['intent']:>12s}{override}  "
+              f"intensity={d['arrangement_intensity']:.2f})")
 
     if timing_log is not None:
         print_timing_summary(timing_log)
@@ -747,6 +878,10 @@ def main() -> int:
     parser.add_argument("--bpm", type=float, default=120.0)
     parser.add_argument("--bars", type=int, default=16,
                         help="Number of bars to simulate (default: 16 → 32s at 120 BPM)")
+    parser.add_argument("--mode", type=str, default="scripted",
+                        choices=["scripted", "inferred"],
+                        help="scripted = forced DROP/ANCHOR/BAIL (reliable arc); "
+                             "inferred = pipeline decides everything from input")
     parser.add_argument("--no-play", action="store_true",
                         help="Print only, do not send MIDI")
     parser.add_argument("--print-schedule", action="store_true",
@@ -756,15 +891,16 @@ def main() -> int:
     do_play = not args.no_play
     bpm = args.bpm
     bars = args.bars
+    mode = args.mode
 
-    print(f"Continuous Jam MIDI Demo")
+    print(f"Continuous Jam MIDI Demo — {mode.upper()} mode")
     print(f"  BPM: {bpm}  Bars: {bars}  "
           f"Duration: ~{bars * (60.0 / bpm) * 4.0:.1f}s")
     print(f"  Mode: {'PLAY' if do_play else 'PRINT-ONLY'}")
 
     # Run the jam
     pipeline, diagnostics, global_events = run_continuous_jam(
-        bars=bars, bpm=bpm,
+        bars=bars, bpm=bpm, mode=mode,
     )
 
     # Print diagnostics

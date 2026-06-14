@@ -107,6 +107,7 @@ class TestBehaviourIntent:
         expected = {
             "LISTEN", "BAIL", "ENTER_SOFT", "ENTER_FULL", "MAINTAIN",
             "BUILD", "REDUCE", "ANCHOR", "FILL", "CRASH", "DROP",
+            "FINAL_BAIL",
         }
         actual = set(BehaviourIntent.__members__.keys())
         assert actual == expected

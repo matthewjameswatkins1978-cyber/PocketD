@@ -40,6 +40,7 @@ class BehaviourIntent(str, Enum):
     FILL = "fill"
     CRASH = "crash"
     DROP = "drop"
+    FINAL_BAIL = "final_bail"
 
 
 def parse_behaviour_intent(value: str) -> BehaviourIntent:
@@ -118,6 +119,34 @@ class DrummerProfile:
     anchor_phase_threshold: float = 0.45
     feature_bail_silence_seconds: float = 1.50
     feature_hysteresis_margin: float = 0.10
+
+    # Stage 4 — DROP inference thresholds
+    drop_density_threshold: float = 0.20
+    """Density below this value indicates a deliberate energy pullback."""
+    drop_silence_min_seconds: float = 0.05
+    """Minimum silence duration to consider DROP (0 = no minimum gap needed)."""
+    drop_silence_max_seconds: float = 1.50
+    """Maximum silence for DROP — longer silence triggers BAIL instead."""
+    drop_change_threshold: float = 0.04
+    """Change_score above this indicates a deliberate shift."""
+    drop_min_certainty_threshold: float = 0.35
+    """Minimum player certainty for DROP (below this is ANCHOR territory)."""
+    drop_phase_threshold: float = 0.50
+    """Phase alignment must meet or exceed this to consider DROP."""
+
+    # Stage 4 — FINAL_BAIL thresholds
+    final_bail_change_threshold: float = 0.20
+    """Change_score above this indicates deliberate ending gesture."""
+    final_bail_silence_min_seconds: float = 0.25
+    """Minimum silence before FINAL_BAIL (brief musical pause)."""
+    final_bail_silence_max_seconds: float = 1.00
+    """Maximum silence for FINAL_BAIL — longer silence triggers plain BAIL."""
+    final_bail_min_certainty: float = 0.45
+    """Minimum player certainty for FINAL_BAIL (confident ending)."""
+    final_bail_phase_threshold: float = 0.55
+    """Phase must be decent for a confident ending cue."""
+    final_bail_recent_strength_threshold: float = 0.60
+    """Recent strength_ema must have been at least this high."""
 
 
 # Conservative default — stable, doesn't jump at minor changes
@@ -1054,11 +1083,17 @@ class FeatureDrivenBehaviourEngine:
         now = snapshot.timestamp
         self._last_eval_time = now
 
-        # 1. BAIL — silence override (highest priority)
+        # 1. Plain BAIL — long silence (highest priority)
         bail = self._check_feature_bail(snapshot)
         if bail is not None:
             self._record_intent_change(bail.intent)
             return bail
+
+        # 1b. FINAL_BAIL — confident ending cue (before ENTRY)
+        final_bail = self._check_feature_final_bail(snapshot)
+        if final_bail is not None:
+            self._record_intent_change(final_bail.intent)
+            return final_bail
 
         # 2. Pre-entry: check ENTER conditions
         if not self.has_entered:
@@ -1072,12 +1107,8 @@ class FeatureDrivenBehaviourEngine:
             return anchor
 
         # REDUCE — density inversion (player too busy)
-        # Comes BEFORE BUILD because the drummer should not reward
-        # frantic density with more complexity. BUILD can still
-        # override REDUCE, but only when all controlled-build gates pass.
         reduce_ = self._check_feature_reduce(snapshot)
         if reduce_ is not None:
-            # Allow BUILD to override REDUCE when controlled-build is clear
             build = self._check_feature_build(snapshot)
             if build is not None and build.confidence > reduce_.confidence:
                 self._record_intent_change(build.intent)
@@ -1085,11 +1116,17 @@ class FeatureDrivenBehaviourEngine:
             self._record_intent_change(reduce_.intent)
             return reduce_
 
-        # BUILD — rising energy and change (only when REDUCE didn't fire)
+        # BUILD — rising energy and change
         build = self._check_feature_build(snapshot)
         if build is not None:
             self._record_intent_change(build.intent)
             return build
+
+        # DROP — deliberate musical pullback
+        drop = self._check_feature_drop(snapshot)
+        if drop is not None:
+            self._record_intent_change(drop.intent)
+            return drop
 
         # Default: MAINTAIN — hold the pocket
         maintain = self._make_maintain(snapshot)
@@ -1487,6 +1524,202 @@ class FeatureDrivenBehaviourEngine:
                 "input_density": density,
                 "reduce_density_threshold": profile.reduce_density_threshold,
                 "player_certainty": snap.player_certainty,
+            },
+            evaluated_at=snap.timestamp,
+        )
+
+    # ------------------------------------------------------------------
+    # Feature DROP logic
+    # ------------------------------------------------------------------
+
+    def _check_feature_drop(self, snap) -> BehaviourDecision | None:
+        """Return DROP if density has collapsed in a musically deliberate way.
+
+        DROP is a deliberate musical pullback, not panic, not uncertainty
+        support, and not a total ending.
+
+        Conditions:
+        * Must have entered (active/entered is true)
+        * input_density has dropped below drop_density_threshold
+        * change_score is elevated (deliberate shift, not gradual decay)
+        * silence_duration is between drop_silence_min and drop_silence_max
+        * player_certainty is above drop_min_certainty (not ANCHOR territory)
+        * phase_alignment is not poor (>= drop_phase_threshold if available)
+
+        BAIL beats DROP (checked earlier — longer silence takes priority).
+        ANCHOR beats DROP (checked earlier — uncertain player needs guidance).
+
+        Hysteresis: if already DROP, require density to rise above
+        (threshold + hysteresis_margin) AND change_score to drop below
+        (threshold - hysteresis_margin) to exit.
+        """
+        profile = self.profile
+
+        certainty = snap.player_certainty
+        density = snap.input_density
+        change = snap.change_score
+        silence = snap.silence_duration
+        phase = snap.phase_alignment
+
+        # Hysteresis: if already in DROP, check exit thresholds
+        if self.previous_intent == BehaviourIntent.DROP:
+            exit_density = profile.drop_density_threshold + profile.feature_hysteresis_margin
+            exit_change = profile.drop_change_threshold - profile.feature_hysteresis_margin
+            exit_silence = profile.drop_silence_max_seconds
+
+            if (
+                density >= exit_density
+                and change <= exit_change
+                and silence >= exit_silence
+            ):
+                return None  # Energy has returned — exit DROP
+
+            # Still dropped — stay in DROP
+            return BehaviourDecision(
+                intent=BehaviourIntent.DROP,
+                confidence=min(1.0, change / profile.drop_change_threshold),
+                reason=f"Feature DROP (hold): density {density:.3f} < exit threshold {exit_density:.3f}",
+                scores={
+                    "input_density": density,
+                    "change_score": change,
+                    "silence_duration": silence,
+                    "player_certainty": certainty,
+                    "drop_density_threshold": profile.drop_density_threshold,
+                },
+                evaluated_at=snap.timestamp,
+            )
+
+        # Not in DROP — check entry conditions
+
+        # 1. Density must have dropped low (deliberate pullback)
+        if density > profile.drop_density_threshold:
+            return None
+
+        # 2. Change must be elevated (not just low-energy all along)
+        if change < profile.drop_change_threshold:
+            return None
+
+        # 3. Silence must be brief to moderate (not long enough for BAIL,
+        #    but at least a short musical gap)
+        if silence < profile.drop_silence_min_seconds:
+            return None
+        if silence > profile.drop_silence_max_seconds:
+            return None  # BAIL territory
+
+        # 4. Certainty must not be catastrophically low (ANCHOR's job)
+        if certainty < profile.drop_min_certainty_threshold:
+            return None
+
+        # 5. Phase must be acceptable — DROP is musical, not chaotic
+        if phase is not None and phase < profile.drop_phase_threshold:
+            return None
+
+        drop_confidence = min(
+            change / profile.drop_change_threshold,
+            1.0 - (density / profile.drop_density_threshold),
+        )
+        drop_confidence = max(0.0, min(1.0, drop_confidence))
+
+        return BehaviourDecision(
+            intent=BehaviourIntent.DROP,
+            confidence=drop_confidence,
+            reason=f"Feature DROP: input_density {density:.3f} <= "
+                   f"{profile.drop_density_threshold}, "
+                   f"change_score {change:.3f} >= {profile.drop_change_threshold}, "
+                   f"certainty {certainty:.3f} >= {profile.drop_min_certainty_threshold}",
+            scores={
+                "input_density": density,
+                "change_score": change,
+                "silence_duration": silence,
+                "player_certainty": certainty,
+                "phase_alignment": phase or 0.0,
+                "drop_density_threshold": profile.drop_density_threshold,
+                "drop_change_threshold": profile.drop_change_threshold,
+                "drop_min_certainty_threshold": profile.drop_min_certainty_threshold,
+                "drop_phase_threshold": profile.drop_phase_threshold,
+            },
+            evaluated_at=snap.timestamp,
+        )
+
+    # ------------------------------------------------------------------
+    # Feature FINAL_BAIL logic
+    # ------------------------------------------------------------------
+
+    def _check_feature_final_bail(self, snap) -> BehaviourDecision | None:
+        """Return FINAL_BAIL if a confident ending cue is detected.
+
+        FINAL_BAIL is a musical ending — kick + crash on next bar 1,
+        then silence.  It fires only when the player appears to be
+        finishing deliberately with confidence.
+
+        Conditions:
+        * Must have entered (active/entered is true)
+        * change_score >= final_bail_change_threshold
+        * silence_duration between final_bail_silence_min and _max
+        * player_certainty >= final_bail_min_certainty
+        * phase_alignment >= final_bail_phase_threshold (if available)
+        * strength_ema >= final_bail_recent_strength_threshold
+          (player was playing strongly before the pause)
+
+        Plain BAIL (long silence) beats FINAL_BAIL — checked earlier.
+        ANCHOR (uncertain player) beats FINAL_BAIL — checked earlier.
+        """
+        profile = self.profile
+
+        certainty = snap.player_certainty
+        change = snap.change_score
+        silence = snap.silence_duration
+        phase = snap.phase_alignment
+        strength = getattr(snap, 'strength_ema', certainty)
+
+        # Must have entered
+        if not self.has_entered:
+            return None
+
+        # Must have been playing with decent strength recently
+        if strength < profile.final_bail_recent_strength_threshold:
+            return None
+
+        # Change must be elevated (deliberate ending gesture, not gradual fade)
+        if change < profile.final_bail_change_threshold:
+            return None
+
+        # Silence must be in the musical-ending window
+        if silence < profile.final_bail_silence_min_seconds:
+            return None
+        if silence > profile.final_bail_silence_max_seconds:
+            return None   # Too long — let plain BAIL handle it
+
+        # Certainty must be solid — confident ending
+        if certainty < profile.final_bail_min_certainty:
+            return None
+
+        # Phase must be acceptable
+        if phase is not None and phase < profile.final_bail_phase_threshold:
+            return None
+
+        confidence = min(
+            change / profile.final_bail_change_threshold,
+            certainty / profile.final_bail_min_certainty,
+            strength / profile.final_bail_recent_strength_threshold,
+        )
+        confidence = max(0.0, min(1.0, confidence))
+
+        return BehaviourDecision(
+            intent=BehaviourIntent.FINAL_BAIL,
+            confidence=confidence,
+            reason=f"Feature FINAL_BAIL: change {change:.3f}, "
+                   f"certainty {certainty:.3f}, strength {strength:.3f}, "
+                   f"silence {silence:.1f}s",
+            scores={
+                "change_score": change,
+                "player_certainty": certainty,
+                "silence_duration": silence,
+                "strength_ema": strength,
+                "phase_alignment": phase or 0.0,
+                "final_bail_change_threshold": profile.final_bail_change_threshold,
+                "final_bail_min_certainty": profile.final_bail_min_certainty,
+                "final_bail_recent_strength_threshold": profile.final_bail_recent_strength_threshold,
             },
             evaluated_at=snap.timestamp,
         )
