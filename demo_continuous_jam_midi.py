@@ -159,15 +159,16 @@ def _anchor_groove() -> list[GrooveEvent]:
 
 
 def _arrival_groove() -> list[GrooveEvent]:
-    """Firm arrival groove: crash accent on 1, extra kick on 1&, ride colour.
+    """Firm arrival groove: ride accent on 1, extra kick on 1&, ride colour.
 
     Used after a BUILD to give a sense of arrival.
-    The crash on beat 1 is a tasteful arrival accent (not spam).
-    The extra kick and open hi-hat/ride give distinct skeleton character.
+    Uses ride cymbal (not crash) for arrival colour — crash is reserved
+    for FINAL_BAIL and explicit phrase-peak markers only.
+    The extra kick and ride give distinct skeleton character without crash.
     """
     return [
         GrooveEvent("kick", 0, velocity=115),
-        GrooveEvent("crash", 0, velocity=90),  # tasteful crash on arrival
+        GrooveEvent("ride", 0, velocity=90),  # ride on beat 1 for arrival colour
         GrooveEvent("hi_hat", 1, velocity=65),
         GrooveEvent("hi_hat", 2, velocity=70),
         GrooveEvent("kick", 3, velocity=80),  # extra kick on 1&
@@ -219,16 +220,20 @@ def _settle_groove() -> list[GrooveEvent]:
 
 
 def _recover_groove_phase1() -> list[GrooveEvent]:
-    """Sparse recovery phase 1: kick pulse with soft snare on beat 4.
+    """Sparse recovery phase 1: kick pulse with soft snare + quiet quarter hats.
 
-    3 events per bar — differs from DROP's 2-event kick-only output.
-    The soft snare on beat 4 gives a musical hint that recovery is beginning,
-    and changes the evaluator bucket from L/0 (DROP) to L/1 (recovery).
+    7 events per bar — quiet quarter-note hi-hat pulse bridges DROP→recovery
+    so bar 11 doesn't jump from hatless to busy 8th hats on bar 12.
+    The soft snare on beat 4 gives a musical hint that recovery is beginning.
     """
     return [
         GrooveEvent("kick", 0, velocity=75),
+        GrooveEvent("hi_hat", 0, velocity=25),
+        GrooveEvent("hi_hat", 4, velocity=25),
         GrooveEvent("kick", 8, velocity=72),
+        GrooveEvent("hi_hat", 8, velocity=25),
         GrooveEvent("snare", 12, velocity=40),  # soft snare on beat 4 — recovery hint
+        GrooveEvent("hi_hat", 12, velocity=25),
     ]
 
 
@@ -686,12 +691,16 @@ def _build_drop_timeline(
 ) -> list[list[MusicalEvent]]:
     """Build timeline for DROP scenario.
 
-    Bars 0-1:   LISTEN (empty)
-    Bars 2-4:   MAINTAIN setup
-    Bars 5-8:   BUILD or busier
-    Bars 9-10:  DROP / REDUCE (thin)
-    Bars 11-14: RECOVER / MAINTAIN
-    Bars 15:    stable
+    Musical form:
+      bars 0-1:   LISTEN (empty)
+      bars 2-4:   MAINTAIN / establish groove (events from bar 3 so not silent)
+      bars 5-7:   BUILD (rising intensity)
+      bar 8:      REDUCE / pre-drop thinning (musical preparation)
+      bars 9-10:  DROP (thin sparse — 2 bars)
+      bars 11-12: RECOVER (climb back within 2 bars)
+      bars 13-14: SETTLE (stable maintain)
+      bar 15:     SETTLE_VARIANT (stable with slight variation)
+
     No FINAL_BAIL, no ANCHOR.
     """
     bar_duration = (60.0 / bpm) * 4.0
@@ -703,33 +712,48 @@ def _build_drop_timeline(
         bar_start = bar * bar_duration
 
         if bar <= 1:
-            continue
+            continue  # LISTEN — empty
 
         elif bar <= 4:
-            # MAINTAIN setup
-            eighth = 60.0 / bpm / 2.0
-            for i in range(8):
-                t = bar_start + i * eighth
-                all_bars[bar].append(MusicalEvent(t, strength=0.65))
+            # MAINTAIN setup — quiet entry on bar 3-4, not fully silent
+            if bar <= 2:
+                # bar 2: very sparse quarter-note pulse (soft entry)
+                for beat in (0, 2):
+                    t = bar_start + beat * (60.0 / bpm)
+                    all_bars[bar].append(MusicalEvent(t, strength=0.40))
+            else:
+                # bar 3-4: steady 8th-note groove
+                eighth = 60.0 / bpm / 2.0
+                for i in range(8):
+                    t = bar_start + i * eighth
+                    all_bars[bar].append(MusicalEvent(t, strength=0.65))
 
-        elif bar <= 8:
-            # BUILD or busier
+        elif bar <= 7:
+            # BUILD — rising intensity over 3 bars
             eighth = 60.0 / bpm / 2.0
-            build_progress = (bar - 5) / 4.0
+            build_progress = (bar - 5) / 3.0
             for i in range(8):
                 t = bar_start + i * eighth
                 strength = min(0.90, 0.55 + build_progress * 0.35)
                 all_bars[bar].append(MusicalEvent(t, strength=strength))
-            if bar >= 7:
+            if bar >= 6:
                 sixteenth = eighth / 2.0
                 for pick in (14, 15):
                     t = bar_start + pick * sixteenth
                     all_bars[bar].append(MusicalEvent(t, strength=0.7))
 
+        elif bar == 8:
+            # REDUCE / pre-drop thinning — thinner than build, preparing the drop
+            eighth = 60.0 / bpm / 2.0
+            for i in range(4):  # only quarter-note positions
+                t = bar_start + i * 2 * eighth
+                all_bars[bar].append(MusicalEvent(t, strength=0.50))
+            # Add a soft snare on beat 4 as a "breath" before drop
+            all_bars[bar].append(MusicalEvent(bar_start + (60.0 / bpm) * 3, strength=0.40))
+
         elif bar <= 10:
-            # DROP — thin sparse events
+            # DROP — thin sparse events (2 bars)
             if is_deliberate_sparse:
-                # Single intentional kick pulse
                 all_bars[bar].append(MusicalEvent(bar_start, strength=0.75))
             else:
                 t1 = bar_start
@@ -737,12 +761,37 @@ def _build_drop_timeline(
                 all_bars[bar].append(MusicalEvent(t1, strength=0.65))
                 all_bars[bar].append(MusicalEvent(t2, strength=0.05))
 
-        else:
-            # RECOVER / MAINTAIN — steady 8th-note
+        elif bar <= 12:
+            # RECOVER — climb back within 2 bars
+            if bar == 11:
+                # Sparse answer: kick pulse + soft snare hint
+                all_bars[bar].append(MusicalEvent(bar_start, strength=0.65))
+                all_bars[bar].append(MusicalEvent(bar_start + (60.0 / bpm) * 2, strength=0.60))
+                all_bars[bar].append(MusicalEvent(bar_start + (60.0 / bpm) * 3, strength=0.25))
+            else:
+                # Fuller recovery: 8th-note groove
+                eighth = 60.0 / bpm / 2.0
+                for i in range(8):
+                    t = bar_start + i * eighth
+                    all_bars[bar].append(MusicalEvent(t, strength=0.70))
+
+        elif bar == 14:
+            # SETTLE — stable maintain (quarter-note hats feel)
             eighth = 60.0 / bpm / 2.0
             for i in range(8):
                 t = bar_start + i * eighth
-                all_bars[bar].append(MusicalEvent(t, strength=0.65))
+                all_bars[bar].append(MusicalEvent(t, strength=0.60))
+
+        elif bar == 15:
+            # SETTLE_VARIANT — slightly different: quarter-note hats, lower strength
+            for beat in range(4):
+                t = bar_start + beat * (60.0 / bpm)
+                all_bars[bar].append(MusicalEvent(t, strength=0.55))
+            all_bars[bar].append(MusicalEvent(bar_start + (60.0 / bpm) * 2, strength=0.50))
+
+        else:
+            # Extra bars (beyond 16): silence
+            continue
 
     return all_bars
 
@@ -947,6 +996,8 @@ _SECTION_PHASE: dict[str, float] = {
     "ANCHOR": 0.20,          # weak/erratic = very poor phase
     "MAINTAIN_2": 0.75,      # recovered, good phase
     "BAIL": 0.75,            # silent — neutral
+    "SETTLE": 0.75,          # settled, stable maintain
+    "RECOVER": 0.65,         # recovering, slightly less phase confidence
 }
 
 
@@ -1189,32 +1240,66 @@ def run_continuous_jam(
         inferred_intent = d.behaviour_intent
         snap = d.feature_snapshot
 
-        # Override specific intents to demonstrate correct output behaviour.
-        # In both scripted and inferred modes, DROP, FINAL_BAIL, and BAIL use
-        # forced intents so the output shaping is proven correct regardless
-        # of simulated input quality.  The inference engine is tested
-        # separately in test_feature_behaviour.py.
-        if section in ("DROP",):
-            intent = BehaviourIntent.DROP
-        elif section == "FINAL_BAIL":
-            intent = BehaviourIntent.FINAL_BAIL
-        elif section == "FINAL_BAIL_SILENCE":
-            intent = BehaviourIntent.BAIL  # silence after final cue
-        elif section == "BAIL":
-            intent = BehaviourIntent.BAIL
-        elif section == "ANCHOR" and is_inferred:
-            # In inferred mode, let ANCHOR fire naturally from weak events + poor phase.
-            intent = inferred_intent
+        # Override specific intents to match the scenario section so that
+        # diagnostic fields (intent, rendered_intent) are correctly aligned
+        # with the musical section in scripted mode.  This ensures the musical
+        # sanity checker uses the correct intent when evaluating each bar
+        # (e.g. MAINTAIN bars are checked for maintain-like output, not
+        # LISTEN-like output).
+        # In inferred mode, only DROP/FINAL_BAIL/BAIL are forced so the
+        # pipeline inference for BUILD/REDUCE/ENTER/MAINTAIN is preserved
+        # for testing.
+        if not is_inferred:
+            # Scripted mode: override ALL sections for clean diagnostics
+            if section in ("DROP",):
+                intent = BehaviourIntent.DROP
+            elif section == "FINAL_BAIL":
+                intent = BehaviourIntent.FINAL_BAIL
+            elif section == "FINAL_BAIL_SILENCE":
+                intent = BehaviourIntent.BAIL
+            elif section == "BAIL":
+                intent = BehaviourIntent.BAIL
+            elif section in ("MAINTAIN", "MAINTAIN_ARRIVAL", "MAINTAIN_2"):
+                intent = BehaviourIntent.MAINTAIN
+            elif section == "SETTLE":
+                intent = BehaviourIntent.MAINTAIN
+            elif section == "RECOVER":
+                intent = BehaviourIntent.MAINTAIN
+            elif section == "BUILD":
+                intent = BehaviourIntent.BUILD
+            elif section == "REDUCE":
+                intent = BehaviourIntent.REDUCE
+            elif section == "ENTER_SOFT":
+                intent = BehaviourIntent.ENTER_SOFT
+            elif section == "SILENCE":
+                intent = BehaviourIntent.LISTEN
+            else:
+                # LISTEN uses inferred intent (should be listen)
+                intent = inferred_intent
         else:
-            # For all other sections, use what the pipeline decided.
-            # This lets BUILD/REDUCE/ENTER be truly inferred.
-            intent = inferred_intent
+            # Inferred mode: only DROP, FINAL_BAIL, and BAIL are forced for
+            # output correctness.  Everything else uses pipeline inference.
+            if section in ("DROP",):
+                intent = BehaviourIntent.DROP
+            elif section == "FINAL_BAIL":
+                intent = BehaviourIntent.FINAL_BAIL
+            elif section == "FINAL_BAIL_SILENCE":
+                intent = BehaviourIntent.BAIL
+            elif section == "BAIL":
+                intent = BehaviourIntent.BAIL
+            elif section == "ANCHOR":
+                # In inferred mode, let ANCHOR fire naturally from weak events + poor phase.
+                intent = inferred_intent
+            else:
+                intent = inferred_intent
 
         # Map section to an arrangement intent so the intensity ramp matches
         # the scenario section, not the pipeline inference (which may lag).
         # This ensures section-specific grooves get correct arrangement scaling.
         arrangement_intent = intent  # default
-        if section == "SETTLE":
+        if section == "BUILD":
+            arrangement_intent = BehaviourIntent.BUILD
+        elif section == "SETTLE":
             arrangement_intent = BehaviourIntent.MAINTAIN
         elif section == "MAINTAIN_ARRIVAL":
             arrangement_intent = BehaviourIntent.MAINTAIN
@@ -1226,7 +1311,7 @@ def run_continuous_jam(
             arrangement_intent = BehaviourIntent.LISTEN
         elif section == "ENTER_SOFT":
             arrangement_intent = BehaviourIntent.ENTER_SOFT
-        # BUILD, REDUCE, DROP, FINAL_BAIL, ANCHOR already match via intent or section
+        # REDUCE, DROP, FINAL_BAIL, ANCHOR already match via intent or section
 
         # Update confidence state after intent is decided
         confidence_state.update(snap, intent)
@@ -1430,12 +1515,18 @@ def _scenario_section_name(scenario: str, bar: int, total_bars: int) -> str:
             return "LISTEN"
         elif bar <= 4:
             return "MAINTAIN"
-        elif bar <= 8:
+        elif bar <= 7:
             return "BUILD"
+        elif bar == 8:
+            return "REDUCE"
         elif bar <= 10:
             return "DROP"
-        else:
+        elif bar <= 12:
             return "RECOVER"
+        elif bar <= 14:
+            return "SETTLE"
+        else:
+            return "MAINTAIN_2"
     elif scenario == "anchor_recovery":
         if bar <= 1:
             return "LISTEN"
@@ -1522,15 +1613,16 @@ def _timeline_section_name(bar: int, total_bars: int, scenario: str = "enter") -
 
 def print_timeline_table(diagnostics: list[dict]) -> None:
     """Print a bar-by-bar diagnostic timeline table."""
-    print(f"\n{'=' * 160}")
+    print(f"\n{'=' * 180}")
     print("  Continuous Jam — Timeline Diagnostic Table")
-    print(f"{'=' * 160}")
+    print(f"{'=' * 180}")
     header = (
         f"  {'Bar':>4s}  {'Time':>5s}  {'Section':>14s}  "
         f"{'Dens':>5s}  {'Cert':>5s}  {'Stab':>5s}  "
         f"{'Chg':>5s}  {'Sil':>4s}  {'Phs':>4s}  "
         f"{'Conf':>5s}  {'SBar':>4s}  {'UBar':>4s}  "
-        f"{'Inferred':>12s}  {'Intent':>12s}  {'ArrInt':>6s}  "
+        f"{'Inferred':>12s}  {'Intent':>12s}  {'Rendered':>12s}  "
+        f"{'ArrInt':>6s}  "
         f"{'VelScl':>6s}  {'HatDen':>6s}  {'Events':>6s}  {'Diff':>5s}"
         f"  {'Phrase':>6s}"
     )
@@ -1539,11 +1631,13 @@ def print_timeline_table(diagnostics: list[dict]) -> None:
           f"{'-' * 5}  {'-' * 5}  {'-' * 5}  "
           f"{'-' * 5}  {'-' * 4}  {'-' * 4}  "
           f"{'-' * 5}  {'-' * 4}  {'-' * 4}  "
-          f"{'-' * 12}  {'-' * 12}  {'-' * 6}  "
+          f"{'-' * 12}  {'-' * 12}  {'-' * 12}  "
+          f"{'-' * 6}  "
           f"{'-' * 6}  {'-' * 6}  {'-' * 6}  {'-' * 5}"
           f"  {'-' * 6}")
     for d in diagnostics:
         inferred = d.get("inferred_intent", d["intent"])
+        rendered = d.get("rendered_intent", d["intent"])
         match_marker = "OVERRIDE" if inferred != d["intent"] else " "
         phrase_label = d.get("phrase_marker_label", "")
         print(
@@ -1554,12 +1648,13 @@ def print_timeline_table(diagnostics: list[dict]) -> None:
             f"{d.get('confidence', 0.0):4.2f}  "
             f"{d.get('stable_bars', 0):4d}  {d.get('unstable_bars', 0):4d}  "
             f"{inferred:>12s}  {d['intent']:>12s}{match_marker}  "
+            f"{rendered:>12s}  "
             f"{d['arrangement_intensity']:.2f}  "
             f"{d['velocity_scale']:.2f}  {d['hat_density']:4d}  "
             f"{d['event_count']:4d}  {d['notes_diff']:+4d}"
             f"  {phrase_label:>6s}"
         )
-    print(f"{'=' * 160}")
+    print(f"{'=' * 180}")
 
 
 def print_schedule_summary(
@@ -1603,10 +1698,12 @@ def print_schedule_summary(
     for d in diagnostics:
         bar_label = f"bar {d['bar']:2d}"
         inferred = d.get("inferred_intent", d["intent"])
+        rendered = d.get("rendered_intent", d["intent"])
         override = " (scripted)" if inferred != d["intent"] else ""
         print(f"    {bar_label:>8s}  {d['section']:>14s}  "
               f"{d['event_count']:3d} events  "
               f"(inferred={inferred:>12s}  intent={d['intent']:>12s}{override}  "
+              f"rendered={rendered:>12s}  "
               f"intensity={d['arrangement_intensity']:.2f})")
 
     if timing_log is not None:

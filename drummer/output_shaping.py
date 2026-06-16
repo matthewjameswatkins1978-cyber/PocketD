@@ -103,13 +103,21 @@ class OutputShapingConfig:
     """Notes with velocity at or below this are considered ghost-velocity."""
 
     # DROP output tuning
-    drop_kick_velocity: int = 100
+    drop_kick_velocity: int = 80
     """Velocity for kick note(s) during DROP."""
     drop_num_kicks: int = 1
     """Number of kick pulses during DROP (1 or 2)."""
     drop_kick_grid_positions: tuple = (0, 8)
     """Grid positions (16th-note) for DROP kicks.
     Default (0, 8) → beat 1 and beat 3.  Only first ``drop_num_kicks`` used."""
+    drop_sparse_hat: bool = True
+    """When True, add a very quiet hi-hat tick on DROP bars to
+    avoid naked kick isolation."""
+    drop_sparse_hat_velocity: int = 25
+    """Velocity for sparse DROP hi-hat tick."""
+    drop_answer_variation: bool = True
+    """When True, vary the second consecutive DROP bar to avoid
+    identical repeated isolated kicks."""
 
     # FINAL_BAIL output tuning
     final_bail_kick_velocity: int = 110
@@ -267,6 +275,8 @@ class BehaviourOutputShaper:
 
     def __init__(self, config: OutputShapingConfig | None = None) -> None:
         self.config = config if config is not None else OutputShapingConfig()
+        self._drop_bar_count: int = 0
+        """Consecutive DROP bar counter for answer variation."""
 
     def shape(
         self,
@@ -322,23 +332,57 @@ class BehaviourOutputShaper:
     # ------------------------------------------------------------------
 
     def _shape_drop(self) -> list[GrooveEvent]:
-        """DROP returns 1–2 sparse kick pulses, no crash, no hats, no snare.
+        """DROP returns sparse kick pulses with optional quiet hat tick.
+
+        Consecutive DROP bars are varied to avoid identical isolated kicks:
+        bar 0 → kick on beat 1 at drop_kick_velocity + quiet hat tick
+        bar 1+ → softer kick answer (70% velocity) on beat 2 or 3,
+                 optionally with ghost snare instead of kick.
 
         The drummer is still active but playing very sparsely.
         """
         cfg = self.config
-        num_kicks = max(1, min(2, cfg.drop_num_kicks))
-        positions = cfg.drop_kick_grid_positions[:num_kicks]
-        return [
-            GrooveEvent(
+        result: list[GrooveEvent] = []
+        bar_count = self._drop_bar_count
+        self._drop_bar_count += 1
+
+        if bar_count == 0 or not cfg.drop_answer_variation:
+            # First DROP bar: kick on beat 1, normal velocity
+            pos = cfg.drop_kick_grid_positions[0]
+            result.append(GrooveEvent(
                 instrument="kick",
                 grid_position=pos,
                 velocity=cfg.drop_kick_velocity,
                 articulation="default",
                 source_role="main",
-            )
-            for pos in positions
-        ]
+            ))
+        else:
+            # Answer bar: varied kick — softer, different position
+            answer_vel = max(40, int(cfg.drop_kick_velocity * 0.7))
+            # Alternate between beat 2 (grid 4) and beat 3 (grid 8)
+            answer_pos = 4 if (bar_count % 2) == 1 else 8
+            result.append(GrooveEvent(
+                instrument="kick",
+                grid_position=answer_pos,
+                velocity=answer_vel,
+                articulation="default",
+                source_role="main",
+            ))
+
+        # Add sparse quiet hat tick to avoid naked isolation
+        if cfg.drop_sparse_hat:
+            # Place hat on beat 1 or 2 opposite to the kick (or on beat 2
+            # if kick is on beat 1)
+            hat_pos = 4  # beat 2 — subtle upbeat tick
+            result.append(GrooveEvent(
+                instrument="hi_hat",
+                grid_position=hat_pos,
+                velocity=cfg.drop_sparse_hat_velocity,
+                articulation="default",
+                source_role="main",
+            ))
+
+        return result
 
     # ------------------------------------------------------------------
     # FINAL_BAIL — kick + crash on beat 1, then stop
@@ -416,6 +460,17 @@ class BehaviourOutputShaper:
                     continue
 
             result.append(evt)
+
+        # Ensure REDUCE never strips hats completely — keep a minimal pulse
+        has_hats = any(_is_hat(e) for e in result)
+        if not has_hats and len(result) > 0:
+            bar_index = events[0].bar_index if events else 0
+            # Add two quarter-note hi-hat ticks at low velocity
+            for pos in (0, 8):
+                result.append(GrooveEvent(
+                    instrument="hi_hat", grid_position=pos, bar_index=bar_index,
+                    velocity=40, articulation="default", source_role="main",
+                ))
 
         return result
 

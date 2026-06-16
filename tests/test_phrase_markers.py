@@ -470,10 +470,19 @@ class TestOutputContractPreservation:
         )
         shaper = BehaviourOutputShaper()
         drop_events = shaper.shape([], BehaviourIntent.DROP)
-        # DROP with phrase markers should produce same result as without
+        # DROP with phrase markers should produce same result as without:
+        # sparse (≤2 events), at least one kick, no crash, optional quiet hat tick.
         assert is_drop_output(drop_events)
         assert len(drop_events) <= 2
-        assert all(e.instrument.lower() == "kick" for e in drop_events)
+        kicks = [e for e in drop_events if e.instrument.lower() == "kick"]
+        hats = [e for e in drop_events if e.instrument.lower() in ("hi_hat", "closed_hat", "open_hat")]
+        crashes = [e for e in drop_events if "crash" in e.instrument.lower()]
+        assert len(kicks) >= 1, "DROP must contain at least one kick"
+        assert len(crashes) == 0, "DROP must not contain crash"
+        for h in hats:
+            assert h.velocity <= 40, (
+                f"DROP hi_hat must be quiet (≤40), got velocity {h.velocity}"
+            )
 
     def test_bail_contract_preserved(self):
         """BAIL output remains empty with phrase markers enabled."""

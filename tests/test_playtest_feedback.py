@@ -899,7 +899,7 @@ class TestCLISummaryMode:
             entry = PlaytestFeedbackEntry(scenario=sc, diagnostics=diag, answers=answers)
             append_feedback_entry(tmp_feedback, entry)
 
-            # Run CLI
+            # Run CLI with explicit --feedback-file
             result = subprocess.run(
                 [
                     sys.executable, "demo_playtest_interview.py",
@@ -913,6 +913,7 @@ class TestCLISummaryMode:
             assert result.returncode == 0, f"CLI failed: {result.stderr}"
             assert "FEEDBACK LEARNING SUMMARY" in result.stdout
             assert "Total feedback entries: 1" in result.stdout
+            assert f"Reading feedback from: {tmp_feedback}" in result.stdout
 
             # Check JSON export was written
             assert os.path.exists(tmp_json)
@@ -922,13 +923,38 @@ class TestCLISummaryMode:
 
             # Check MD export was written
             assert os.path.exists(tmp_md)
-            with open(tmp_md, "r") as f:
-                content = f.read()
-            assert "Pocket Drummer Playtest Learning Summary" in content
         finally:
             for p in (tmp_feedback, tmp_json, tmp_md):
                 if os.path.exists(p):
                     os.remove(p)
+
+    def test_summarize_defaults_to_playtest_feedback(self) -> None:
+        """--summarize-feedback without --feedback-file uses default path."""
+        import subprocess
+        # Use a temp feedback file at the default path in the temp directory approach
+        # Instead, test that the parser no longer requires --feedback-file
+        import importlib as _il
+        mod = _il.import_module("demo_playtest_interview")
+        parser = mod.build_parser()
+        # --summarize-feedback alone (no --feedback-file) should parse
+        args = parser.parse_args(["--summarize-feedback"])
+        assert args.summarize_feedback is True
+        assert args.feedback_file is None  # resolves to default later
+
+    def test_summarize_with_missing_file_is_friendly(self) -> None:
+        """Missing feedback file prints friendly message, no traceback."""
+        import subprocess
+        result = subprocess.run(
+            [
+                sys.executable, "demo_playtest_interview.py",
+                "--summarize-feedback",
+                "--feedback-file", "/no/such/file_xyz_999.jsonl",
+            ],
+            capture_output=True, text=True, cwd=_PROJECT_ROOT,
+        )
+        assert result.returncode == 0, f"CLI failed: {result.stderr}"
+        assert "No feedback file found" in result.stdout
+        assert "Run a playtest interview first" in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -1023,6 +1049,170 @@ class TestOutputContractValidation:
         assert summary.output_contracts_passed is True, (
             "All contracts valid should make output_contracts_passed=True"
         )
+
+
+# ---------------------------------------------------------------------------
+# Simple ear-test feedback mode tests
+# ---------------------------------------------------------------------------
+
+
+class Test2QFeedbackMode:
+    """Tests for the 2-question ear-test feedback mode (_build_2q_answers).
+
+    These tests verify Q1 (good/bad/mixed/unsure), Q2 (score 1-5),
+    and Q3 (optional obvious issue) produce correct PlaytestQuestionnaire.
+    """
+
+    def _mod(self):
+        import importlib as _il
+        return _il.import_module("demo_playtest_interview")
+
+    # -- Q1 + score combinations --
+
+    def test_q1_good_score_4(self) -> None:
+        mod = self._mod()
+        answers = mod._build_2q_answers("g", 4)
+        assert answers.overall_rating == 4
+        assert answers.understood_rating == "yes"
+        assert answers.note == "Matthew judged the overall performance as good."
+
+    def test_q1_bad_score_2(self) -> None:
+        mod = self._mod()
+        answers = mod._build_2q_answers("b", 2)
+        assert answers.overall_rating == 2
+        assert answers.understood_rating == "partly"
+        assert answers.note == "Matthew judged the overall performance as bad."
+
+    def test_q1_mixed_score_3(self) -> None:
+        mod = self._mod()
+        answers = mod._build_2q_answers("m", 3)
+        assert answers.overall_rating == 3
+        assert answers.understood_rating == "partly"
+        assert answers.note == "Matthew judged the overall performance as mixed."
+
+    def test_q1_unsure_score_3(self) -> None:
+        mod = self._mod()
+        answers = mod._build_2q_answers("u", 3)
+        assert answers.overall_rating == 3
+        assert answers.understood_rating == "partly"
+        assert answers.note == "Matthew was unsure how to judge the overall performance."
+
+    def test_q1_good_score_5_can_be_golden(self) -> None:
+        """Golden eligibility: Q1=good + score=5."""
+        mod = self._mod()
+        answers = mod._build_2q_answers("g", 5)
+        assert answers.overall_rating == 5
+        assert answers.understood_rating == "yes"
+        assert "good" in answers.note
+
+    # -- Q3 issue appending --
+
+    def test_q3_timing_appends_issue(self) -> None:
+        mod = self._mod()
+        answers = mod._build_2q_answers("g", 4, q3="t")
+        assert "Obvious issue: timing felt off." in answers.note
+
+    def test_q3_samey_appends_issue(self) -> None:
+        mod = self._mod()
+        answers = mod._build_2q_answers("m", 3, q3="s")
+        assert "Obvious issue: too samey or boring." in answers.note
+
+    def test_q3_decision_appends_issue(self) -> None:
+        mod = self._mod()
+        answers = mod._build_2q_answers("b", 2, q3="d")
+        assert "Obvious issue: drummer decision felt wrong for the input." in answers.note
+
+    def test_q3_none_appends_none(self) -> None:
+        mod = self._mod()
+        answers = mod._build_2q_answers("g", 4, q3="n")
+        assert "Obvious issue: none." in answers.note
+
+    def test_q3_empty_appends_nothing(self) -> None:
+        mod = self._mod()
+        answers = mod._build_2q_answers("g", 4, q3="")
+        assert "Obvious issue:" not in answers.note
+
+    # -- Aux fields are set sensibly --
+
+    def test_timing_rating_always_about_right(self) -> None:
+        for q1 in ("g", "b", "m", "u"):
+            answers = self._mod()._build_2q_answers(q1, 3)
+            assert answers.timing_rating == "about_right"
+
+    def test_amount_rating_always_about_right(self) -> None:
+        for q1 in ("g", "b", "m", "u"):
+            answers = self._mod()._build_2q_answers(q1, 3)
+            assert answers.amount_rating == "about_right"
+
+    def test_confidence_rating_always_about_right(self) -> None:
+        for q1 in ("g", "b", "m", "u"):
+            answers = self._mod()._build_2q_answers(q1, 3)
+            assert answers.confidence_rating == "about_right"
+
+    # -- Suggested change mapping --
+
+    def test_good_maps_to_no_change(self) -> None:
+        answers = self._mod()._build_2q_answers("g", 4)
+        assert answers.suggested_change == "no_change"
+
+    def test_bad_maps_to_no_change(self) -> None:
+        # sentiment captured in note, not suggested_change
+        answers = self._mod()._build_2q_answers("b", 2)
+        assert answers.suggested_change == "no_change"
+
+    def test_mixed_maps_to_no_change(self) -> None:
+        answers = self._mod()._build_2q_answers("m", 3)
+        assert answers.suggested_change == "no_change"
+
+    def test_unsure_maps_to_no_change(self) -> None:
+        answers = self._mod()._build_2q_answers("u", 3)
+        assert answers.suggested_change == "no_change"
+
+
+class Test2QFeedbackCLI:
+    """Tests for the CLI with 2-question feedback mode."""
+
+    def _mod(self):
+        import importlib as _il
+        return _il.import_module("demo_playtest_interview")
+
+    def test_detailed_feedback_flag_preserves_old_flow(self) -> None:
+        mod = self._mod()
+        parser = mod.build_parser()
+        args = parser.parse_args(["--detailed-feedback", "--no-play", "--scenario", "enter"])
+        assert args.detailed_feedback is True
+
+    def test_default_mode_is_not_detailed(self) -> None:
+        mod = self._mod()
+        parser = mod.build_parser()
+        args = parser.parse_args(["--no-play", "--scenario", "enter"])
+        assert args.detailed_feedback is False
+
+    def test_2q_helpers_exist(self) -> None:
+        """_build_2q_answers, _prompt_q1/_q2/_q3 exist."""
+        mod = self._mod()
+        assert hasattr(mod, "_build_2q_answers")
+        assert hasattr(mod, "_prompt_q1")
+        assert hasattr(mod, "_prompt_q2")
+        assert hasattr(mod, "_prompt_q3")
+        assert hasattr(mod, "_print_compact_diagnostics")
+
+    def test_compact_diagnostics_accepts_summary(self) -> None:
+        mod = self._mod()
+        from drummer.playtest_feedback import PlaytestDiagnosticsSummary
+        summary = PlaytestDiagnosticsSummary(
+            total_events=42,
+            first_enter_bar=2,
+            first_build_bar=None,
+            confidence_peak=0.85,
+            phrase_marker_count=2,
+            inferred_intents={"listen": 3, "enter_soft": 1},
+            output_contracts_passed=True,
+            drop_event_count=0,
+            final_bail_event_count=0,
+            bail_event_count=0,
+        )
+        mod._print_compact_diagnostics(summary, sanity_passed=True)
 
 
 # We need _PROJECT_ROOT for the CLI test

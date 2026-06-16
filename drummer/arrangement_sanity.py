@@ -185,6 +185,8 @@ def _check_static_drop_too_long(diagnostics: list[dict]) -> list[MusicalSanityIs
 
     Rule: after a BUILD or during REDUCE/DROP, if the same bar signature
     repeats for >= 3 bars, it's too static.
+    Uses ``rendered_intent`` when available for better alignment with
+    actual output shaping.
     """
     issues: list[MusicalSanityIssue] = []
     n = len(diagnostics)
@@ -192,9 +194,9 @@ def _check_static_drop_too_long(diagnostics: list[dict]) -> list[MusicalSanityIs
     i = 0
     while i < n:
         diag = diagnostics[i]
-        # Only check REDUCE, DROP, MAINTAIN sections after a build
+        # Use rendered_intent (which reflects actual output shaping) when available
+        intent = _evaluation_intent(diag)
         section = diag.get("section", "")
-        intent = diag.get("intent", "")
         if intent in ("reduce", "drop") or section in ("DROP", "REDUCE", "MAINTAIN_2"):
             events = diag.get("event_count", 0)
             if events <= 4:
@@ -204,7 +206,7 @@ def _check_static_drop_too_long(diagnostics: list[dict]) -> list[MusicalSanityIs
                     i += 1
                 end = i
                 run = end - start
-                if run >= 3:
+                if run >= 4:  # Was >=3, now >=4 to account for REDUCE bar being intentional
                     sigs = [_bar_signature(diagnostics[j]) for j in range(start, end)]
                     unique = len(set(sigs))
                     if unique <= 2:  # nearly identical

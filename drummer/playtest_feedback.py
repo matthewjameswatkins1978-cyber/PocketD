@@ -1295,7 +1295,7 @@ def _print_console_summary(summary: PlaytestLearningSummary) -> None:
     print("  Repeated complaints:")
     if summary.repeated_issues:
         for issue in summary.repeated_issues:
-            print(f"    • {issue}")
+            print(f"    * {issue}")
     else:
         print("    (none identified)")
     print()
@@ -1304,7 +1304,7 @@ def _print_console_summary(summary: PlaytestLearningSummary) -> None:
     print("  Possible tuning directions:")
     if summary.possible_tuning_directions:
         for direction in summary.possible_tuning_directions:
-            print(f"    → {direction}")
+            print(f"    -> {direction}")
     else:
         print("    (insufficient data)")
     print(f"{sep}\n")

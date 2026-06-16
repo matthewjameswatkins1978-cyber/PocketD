@@ -227,7 +227,11 @@ class TestReduce:
         # snare at pos 3 (off-beat, low vel) → remove
         # snare at pos 7 (off-beat, low vel) → remove
         # snare at pos 12 (beat 4) → keep even if low vel
-        assert len(result) == 3  # 0, 4, 12
+        # REDUCE safety net adds 2 hi-hat ticks on beats 1 and 3
+        snares = [e for e in result if _is_snare(e)]
+        assert len(snares) == 3  # 0, 4, 12
+        # Total includes 3 snares + 2 hat ticks
+        assert len(result) == 5
 
     def test_reduce_preserves_kick_on_beat_1(self) -> None:
         shaper = BehaviourOutputShaper()
@@ -425,11 +429,19 @@ class TestBailDrop:
         shaper = BehaviourOutputShaper()
         events = _basic_groove()
         result = shaper.shape(events, BehaviourIntent.DROP)
-        # DROP returns 1–2 sparse kicks, not empty
+        # DROP returns sparse events with at least one kick, no crash
         assert len(result) >= 1
-        assert len(result) <= 2
+        has_kick = False
         for e in result:
-            assert _is_kick(e), "DROP should only contain kick"
+            assert not _is_crash(e), "DROP must not contain crash"
+            # Allow sparse hat ticks (velocity <= 40) as part of DROP
+            if _is_hat(e) or _is_ride(e):
+                assert e.velocity <= 40, (
+                    f"Hat/ride in DROP must be very quiet, got velocity {e.velocity}"
+                )
+            if _is_kick(e):
+                has_kick = True
+        assert has_kick, "DROP must contain at least one kick"
         assert is_drop_output(result)
 
     def test_bail_on_empty(self) -> None:
