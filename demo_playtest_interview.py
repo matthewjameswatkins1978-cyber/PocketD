@@ -307,15 +307,29 @@ def _print_diagnostics_summary(
     print(f"  Contracts passed:    {contracts_pass}")
     if not contracts_pass:
         # Show which contract failed
-        drop_ok = any(d.get("is_drop", False) and d.get("event_count", 0) > 0 for d in raw_diagnostics)
-        bail_ok = any(d.get("is_bail", False) for d in raw_diagnostics)
-        final_bail_ok = any(d.get("is_final_bail", False) for d in raw_diagnostics)
+        drop_bars = [d for d in raw_diagnostics if d.get("section") == "DROP"]
+        bail_bars = [d for d in raw_diagnostics if d.get("section") == "BAIL"]
+        final_bail_bars = [
+            d for d in raw_diagnostics if d.get("section") == "FINAL_BAIL"
+        ]
+        drop_ok = all(
+            d.get("is_drop", False) and d.get("event_count", 0) > 0
+            for d in drop_bars
+        )
+        bail_ok = all(
+            d.get("is_bail", False) and d.get("event_count", 0) == 0
+            for d in bail_bars
+        )
+        final_bail_ok = all(
+            d.get("is_final_bail", False) and d.get("event_count", 0) == 2
+            for d in final_bail_bars
+        )
         failed = []
-        if not drop_ok:
+        if drop_bars and not drop_ok:
             failed.append("DROP (>0 events)")
-        if not bail_ok:
+        if bail_bars and not bail_ok:
             failed.append("BAIL (0 events)")
-        if not final_bail_ok:
+        if final_bail_bars and not final_bail_ok:
             failed.append("FINAL_BAIL (kick+crash on beat 1)")
         if failed:
             print(f"    (Failed contracts: {', '.join(failed)})")
@@ -880,6 +894,14 @@ def main() -> None:
 
                 # Build answers
                 answers = _build_2q_answers(q1, score, q3)
+                validate_questionnaire_answers(
+                    overall_rating=answers.overall_rating,
+                    timing_rating=answers.timing_rating,
+                    amount_rating=answers.amount_rating,
+                    confidence_rating=answers.confidence_rating,
+                    understood_rating=answers.understood_rating,
+                    suggested_change=answers.suggested_change,
+                )
 
                 entry = PlaytestFeedbackEntry(
                     scenario=sc, diagnostics=summary, answers=answers

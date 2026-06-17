@@ -1050,6 +1050,48 @@ class TestOutputContractValidation:
             "All contracts valid should make output_contracts_passed=True"
         )
 
+    def test_valid_drop_only_scenario_passes(self) -> None:
+        """A scenario with DROP but no BAIL/FINAL_BAIL should not fail missing contracts."""
+        raw = [
+            {"bar": 0, "section": "LISTEN", "event_count": 0, "is_drop": False,
+             "is_bail": False, "is_final_bail": False, "intent": "listen",
+             "inferred_intent": "listen", "confidence": 0.0, "phrase_marker": "none"},
+            {"bar": 9, "section": "DROP", "event_count": 2, "is_drop": True,
+             "is_bail": False, "is_final_bail": False, "intent": "drop",
+             "inferred_intent": "drop", "confidence": 0.0, "phrase_marker": "none"},
+            {"bar": 10, "section": "DROP", "event_count": 2, "is_drop": True,
+             "is_bail": False, "is_final_bail": False, "intent": "drop",
+             "inferred_intent": "drop", "confidence": 0.0, "phrase_marker": "none"},
+        ]
+        summary = _extract_diagnostics_summary(raw)
+        assert summary.output_contracts_passed is True
+
+    def test_valid_bail_only_scenario_passes(self) -> None:
+        """A scenario with BAIL but no DROP/FINAL_BAIL should not fail missing contracts."""
+        raw = [
+            {"bar": 0, "section": "MAINTAIN", "event_count": 8, "is_drop": False,
+             "is_bail": False, "is_final_bail": False, "intent": "maintain",
+             "inferred_intent": "maintain", "confidence": 0.0, "phrase_marker": "none"},
+            {"bar": 19, "section": "BAIL", "event_count": 0, "is_drop": False,
+             "is_bail": True, "is_final_bail": False, "intent": "bail",
+             "inferred_intent": "bail", "confidence": 0.0, "phrase_marker": "none"},
+        ]
+        summary = _extract_diagnostics_summary(raw)
+        assert summary.output_contracts_passed is True
+
+    def test_valid_final_bail_only_scenario_passes(self) -> None:
+        """A scenario with FINAL_BAIL but no DROP/BAIL should not fail missing contracts."""
+        raw = [
+            {"bar": 0, "section": "MAINTAIN", "event_count": 8, "is_drop": False,
+             "is_bail": False, "is_final_bail": False, "intent": "maintain",
+             "inferred_intent": "maintain", "confidence": 0.0, "phrase_marker": "none"},
+            {"bar": 14, "section": "FINAL_BAIL", "event_count": 2, "is_drop": False,
+             "is_bail": False, "is_final_bail": True, "intent": "final_bail",
+             "inferred_intent": "final_bail", "confidence": 0.0, "phrase_marker": "none"},
+        ]
+        summary = _extract_diagnostics_summary(raw)
+        assert summary.output_contracts_passed is True
+
 
 # ---------------------------------------------------------------------------
 # Simple ear-test feedback mode tests
@@ -1187,6 +1229,79 @@ class Test2QFeedbackCLI:
         parser = mod.build_parser()
         args = parser.parse_args(["--no-play", "--scenario", "enter"])
         assert args.detailed_feedback is False
+
+    def test_default_feedback_path_matches_summary_default(self) -> None:
+        mod = self._mod()
+        parser = mod.build_parser()
+        args = parser.parse_args(["--summarize-feedback"])
+        assert mod._resolve_feedback_path(args) == "playtest_feedback.jsonl"
+
+    def test_simple_answers_validate_for_all_q1_values(self) -> None:
+        mod = self._mod()
+        for q1 in ("g", "b", "m", "u"):
+            answers = mod._build_2q_answers(q1, 3, q3="d")
+            validate_questionnaire_answers(
+                overall_rating=answers.overall_rating,
+                timing_rating=answers.timing_rating,
+                amount_rating=answers.amount_rating,
+                confidence_rating=answers.confidence_rating,
+                understood_rating=answers.understood_rating,
+                suggested_change=answers.suggested_change,
+            )
+
+    def test_simple_golden_flow_saves_feedback_before_golden(
+        self,
+        monkeypatch,
+        sample_scenario: PlaytestScenario,
+        sample_diagnostics: PlaytestDiagnosticsSummary,
+    ) -> None:
+        mod = self._mod()
+        calls: list[tuple[str, object]] = []
+
+        monkeypatch.setattr(
+            mod,
+            "get_scenario_variations",
+            lambda scenario, preset="normal": [sample_scenario],
+        )
+        monkeypatch.setattr(
+            mod,
+            "run_playtest_scenario",
+            lambda sc, no_play=True: (sample_diagnostics, [], []),
+        )
+        monkeypatch.setattr(mod, "_prompt_q1", lambda: "g")
+        monkeypatch.setattr(mod, "_prompt_q2", lambda: 5)
+        monkeypatch.setattr(mod, "_prompt_q3", lambda: "")
+        monkeypatch.setattr(mod, "_prompt_golden_yn", lambda: True)
+        monkeypatch.setattr(
+            mod,
+            "append_feedback_entry",
+            lambda path, entry: calls.append(("feedback", path, entry)),
+        )
+        monkeypatch.setattr(
+            mod,
+            "_save_golden_for_scenario",
+            lambda sc, raw_diags, timestamp: calls.append(("golden", sc)),
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "demo_playtest_interview.py",
+                "--scenario", "enter",
+                "--preset", "normal",
+                "--no-play",
+                "--feedback-file", "playtest_feedback.jsonl",
+            ],
+        )
+
+        mod.main()
+
+        assert [call[0] for call in calls] == ["feedback", "golden"]
+        assert calls[0][1] == "playtest_feedback.jsonl"
+        entry = calls[0][2]
+        assert isinstance(entry, PlaytestFeedbackEntry)
+        assert entry.answers.overall_rating == 5
+        assert entry.answers.suggested_change == "no_change"
 
     def test_2q_helpers_exist(self) -> None:
         """_build_2q_answers, _prompt_q1/_q2/_q3 exist."""

@@ -574,37 +574,26 @@ def _extract_diagnostics_summary(
     #        correctly generated zero events)
     # FINAL_BAIL:  must produce exactly 2 events (kick note 36 + crash note 49
     #              on beat 1, grid_position 0)
-    drop_ok = any(d.get("is_drop", False) and d.get("event_count", 0) > 0
-                  for d in diagnostics)
-    bail_ok = any(d.get("is_bail", False) for d in diagnostics)
-    final_bail_ok = any(d.get("is_final_bail", False) for d in diagnostics)
+    drop_bars = [d for d in diagnostics if d.get("section") == "DROP"]
+    bail_bars = [d for d in diagnostics if d.get("section") == "BAIL"]
+    final_bail_bars = [d for d in diagnostics if d.get("section") == "FINAL_BAIL"]
 
-    # Stricter checks for BAIL and FINAL_BAIL using section-level data
-    # BAIL section must have 0 events (not just is_bail flag)
-    for d in diagnostics:
-        if d.get("section") == "BAIL":
-            if d.get("event_count", 0) != 0:
-                bail_ok = False
-            # Also verify is_bail reflects zero-event output
-            if not d.get("is_bail", False):
-                bail_ok = False
+    # Only validate contracts that appear in this scenario.  A DROP scenario
+    # should not fail simply because it has no FINAL_BAIL section.
+    drop_ok = all(
+        d.get("is_drop", False) and d.get("event_count", 0) > 0
+        for d in drop_bars
+    )
+    bail_ok = all(
+        d.get("is_bail", False) and d.get("event_count", 0) == 0
+        for d in bail_bars
+    )
+    final_bail_ok = all(
+        d.get("is_final_bail", False) and d.get("event_count", 0) == 2
+        for d in final_bail_bars
+    )
 
-    # FINAL_BAIL section must have exactly 2 events
-    for d in diagnostics:
-        if d.get("section") == "FINAL_BAIL":
-            ec = d.get("event_count", 0)
-            if ec == 0:
-                final_bail_ok = False
-            # is_final_bail requires exactly kick+crash on beat 1 — trust the
-            # is_final_bail_output check from the pipeline which validates notes
-
-    # DROP section must have > 0 events (not just is_drop flag)
-    for d in diagnostics:
-        if d.get("section") == "DROP":
-            if d.get("event_count", 0) <= 0:
-                drop_ok = False
-
-    output_contracts_passed = drop_ok and bail_ok and final_bail_ok
+    output_contracts_passed = bool(diagnostics) and drop_ok and bail_ok and final_bail_ok
 
     # Event counts per section
     drop_event_count = 0
