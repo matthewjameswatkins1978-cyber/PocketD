@@ -1,4 +1,4 @@
-# DECISIONS — Pocket Drummer
+# DECISIONS — Bunny Deluxe
 
 ## Architectural Decision Record
 
@@ -26,7 +26,7 @@ This document records important architectural decisions and why they were made, 
 
 **Decision:** The drummer (performance layer) never receives raw audio. It only receives interpreted musical state — `MusicalEvent`, `PulseState`, `BarState`, `GrooveIntent`.
 
-**Why:** This enforces the design philosophy that Pocket Drummer is a listener first. Raw audio contains noise, transients, and artefacts that should not directly influence drumming decisions. The perception layer filters and interprets, and the performance layer acts on understanding.
+**Why:** This enforces the design philosophy that Bunny Deluxe is a listener first. Raw audio contains noise, transients, and artefacts that should not directly influence drumming decisions. The perception layer filters and interprets, and the performance layer acts on understanding.
 
 **Architecture:** `Audio → Understanding → Drumming`, not `Audio → Drumming`.
 
@@ -65,9 +65,9 @@ This document records important architectural decisions and why they were made, 
 **Date:** Project inception
 **Status:** Accepted
 
-**Decision:** Pocket Drummer outputs MIDI, not audio. It connects to existing drum instruments (EZDrummer, Superior Drummer, Logic Drummer, VSTs).
+**Decision:** Bunny Deluxe outputs MIDI, not audio. It connects to existing drum instruments (EZDrummer, Superior Drummer, Logic Drummer, VSTs).
 
-**Why:** Drum synthesis is a solved problem. Excellent drum VSTs exist. Pocket Drummer's value is in the behavioural intelligence — the listening, pulse tracking, bar detection, and intent decisions. Generating audio would be redundant and would distract from the core mission.
+**Why:** Drum synthesis is a solved problem. Excellent drum VSTs exist. Bunny Deluxe's value is in the behavioural intelligence — the listening, pulse tracking, bar detection, and intent decisions. Generating audio would be redundant and would distract from the core mission.
 
 **Rejected alternative:** Built-in drum sample playback or synthesis. Would require maintaining sample libraries, dealing with audio latency, and competing with dedicated drum instruments that already do this better.
 
@@ -85,7 +85,7 @@ This document records important architectural decisions and why they were made, 
 2. **Predictability** — Behaviour should be consistent and tunable, not a black box.
 3. **Latency** — DSP and statistics are faster than model inference.
 4. **Dependency** — No GPU requirement, no large model downloads, no framework version issues.
-5. **Philosophy** — Pocket Drummer models drumming behaviour, not statistical patterns in training data.
+5. **Philosophy** — Bunny Deluxe models drumming behaviour, not statistical patterns in training data.
 
 **Rejected alternative:** Using RNNs, transformers, or reinforcement learning to generate drum patterns. This would make the system opaque, unpredictable, and dependent on training data quality.
 
@@ -98,7 +98,7 @@ This document records important architectural decisions and why they were made, 
 
 **Decision:** Implement the core system in Python with NumPy for DSP.
 
-**Why:** Python enables rapid prototyping of the behavioural rules and state machines that form the core of Pocket Drummer. NumPy provides efficient FFT and array operations. The MIDI libraries (mido, python-rtmidi) have good Python support. Python's readability aligns with the goal of explainable decisions.
+**Why:** Python enables rapid prototyping of the behavioural rules and state machines that form the core of Bunny Deluxe. NumPy provides efficient FFT and array operations. The MIDI libraries (mido, python-rtmidi) have good Python support. Python's readability aligns with the goal of explainable decisions.
 
 **Rejected alternative:** C++ or Rust for lower latency. The trade-off in development speed is not worth it at this stage. If latency becomes a bottleneck in live performance, critical paths can be extracted later.
 

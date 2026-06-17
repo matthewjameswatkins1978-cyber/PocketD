@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Self-play Musical Sanity Batch Runner.
 
-Generates many simulated musical situations, runs Pocket Drummer's
+Generates many simulated musical situations, runs Bunny Deluxe's
 pipeline, applies the Musical Sanity Checker, and reports failures
 clearly so the user can fix obvious problems before ear testing.
 
@@ -456,7 +456,7 @@ def write_markdown_report(
     eval_stats = _build_musical_evaluation_stats(runs, ear_test_threshold)
 
     lines: list[str] = []
-    lines.append("# Pocket Drummer Self-Play Sanity Report\n")
+    lines.append("# Bunny Deluxe Self-Play Sanity Report\n")
     lines.append("## Run Settings\n")
     lines.append(f"- Command: `{command}`")
     lines.append(f"- Seed: `{seed}`")
@@ -728,7 +728,7 @@ def write_lucy_brief(
     eval_stats = _build_musical_evaluation_stats(runs, ear_test_threshold)
 
     lines: list[str] = []
-    lines.append("# Pocket Drummer Self-Play Sanity Brief\n")
+    lines.append("# Bunny Deluxe Self-Play Sanity Brief\n")
     lines.append("Paste this whole file to Lucy before doing ear testing.\n")
     lines.append("---\n")
     lines.append("")

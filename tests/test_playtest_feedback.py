@@ -849,7 +849,7 @@ class TestExportFormats:
             export_learning_summary_markdown(sample_summary, tmp)
             with open(tmp, "r", encoding="utf-8") as f:
                 content = f.read()
-            assert "# Pocket Drummer Playtest Learning Summary" in content
+            assert "# Bunny Deluxe Playtest Learning Summary" in content
             assert "## Overall" in content
             assert "## Best Working Areas" in content
             assert "## Problem Areas" in content

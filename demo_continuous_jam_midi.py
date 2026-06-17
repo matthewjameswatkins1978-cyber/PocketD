@@ -238,23 +238,21 @@ def _recover_groove_phase1() -> list[GrooveEvent]:
 
 
 def _recover_groove_phase2() -> list[GrooveEvent]:
-    """Medium recovery phase 2: add snare back, 8th hats.
+    """Medium recovery phase 2: add snare back, quarter hats.
 
-    Ramping back toward full groove — 10 events, M bucket.
+    Ramping back toward full groove without jumping to 8th-note hats.
+    8 events, M bucket, matching Matthew's preference that recovery
+    sits on quarter-note hats before the groove fully settles.
     """
     return [
         GrooveEvent("kick", 0, velocity=85),
         GrooveEvent("hi_hat", 0, velocity=65),
-        GrooveEvent("hi_hat", 2, velocity=55),
         GrooveEvent("snare", 4, velocity=90),
         GrooveEvent("hi_hat", 4, velocity=65),
-        GrooveEvent("hi_hat", 6, velocity=55),
         GrooveEvent("kick", 8, velocity=82),
         GrooveEvent("hi_hat", 8, velocity=65),
-        GrooveEvent("hi_hat", 10, velocity=55),
         GrooveEvent("snare", 12, velocity=88),
         GrooveEvent("hi_hat", 12, velocity=65),
-        GrooveEvent("hi_hat", 14, velocity=55),
     ]
 
 

@@ -161,7 +161,7 @@ class DrummerProfile:
 
 # Conservative default — stable, doesn't jump at minor changes
 ConservativePocketDrummer = DrummerProfile(
-    name="Conservative Pocket Drummer",
+    name="Conservative Bunny Deluxe",
     hysteresis_margin=0.10,
     bail_silence_seconds=0.50,
     density_inversion_threshold=0.75,

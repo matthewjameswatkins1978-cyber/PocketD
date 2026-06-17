@@ -1,8 +1,8 @@
-# PROJECT CONTEXT — Pocket Drummer
+# PROJECT CONTEXT — Bunny Deluxe
 
-## What is Pocket Drummer?
+## What is Bunny Deluxe?
 
-Pocket Drummer is a **behavioural drummer**, not a transcription system.
+Bunny Deluxe is a **behavioural drummer**, not a transcription system.
 
 It listens to musical input (audio events), builds an understanding of what is happening musically, and produces MIDI drum performances that feel like another musician in the room.
 
@@ -10,18 +10,18 @@ It listens to musical input (audio events), builds an understanding of what is h
 
 Most drum software asks "what notes are being played?" and sequences patterns.
 
-Pocket Drummer asks **"what is happening?"** and reacts like a human drummer:
+Bunny Deluxe asks **"what is happening?"** and reacts like a human drummer:
 
 - It senses pulse, not just BPM
 - It tracks energy, not just velocity
 - It feels bar boundaries, not just time grids
 - It builds intensity, makes space, and prepares fills contextually
 
-A human drummer cannot see the performer. They listen, feel the music, and respond. Pocket Drummer does the same.
+A human drummer cannot see the performer. They listen, feel the music, and respond. Bunny Deluxe does the same.
 
 ## Core Philosophy
 
-1. **Behaviour over AI** — Pocket Drummer simulates drumming behaviour through explicit rules, state machines, and statistical reasoning. It does not rely on machine learning or deep learning.
+1. **Behaviour over AI** — Bunny Deluxe simulates drumming behaviour through explicit rules, state machines, and statistical reasoning. It does not rely on machine learning or deep learning.
 
 2. **Listening first, playing second** — The system does not immediately produce output. It listens, builds confidence, and only enters when it understands the musical situation.
 
@@ -29,7 +29,7 @@ A human drummer cannot see the performer. They listen, feel the music, and respo
 
 4. **Explainable decisions** — Every musical decision should have a human-readable reason. The system tracks why it chose to enter, build, reduce, or fill.
 
-5. **MIDI only** — Pocket Drummer outputs MIDI, not audio. It connects to existing drum instruments (EZDrummer, Superior Drummer, Logic Drummer, VSTs). No audio synthesis.
+5. **MIDI only** — Bunny Deluxe outputs MIDI, not audio. It connects to existing drum instruments (EZDrummer, Superior Drummer, Logic Drummer, VSTs). No audio synthesis.
 
 6. **DSP and statistics first** — Signal processing, state machines, and statistical reasoning are preferred. Machine learning is not used in the core loop.
 
@@ -48,6 +48,6 @@ A human drummer cannot see the performer. They listen, feel the music, and respo
 
 The success criterion for every feature is:
 
-> **"Does this make Pocket Drummer feel more like another drummer in the room?"**
+> **"Does this make Bunny Deluxe feel more like another drummer in the room?"**
 
 If the answer is no, the feature should be questioned before being added.

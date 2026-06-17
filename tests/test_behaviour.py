@@ -123,7 +123,7 @@ class TestConservativePocketDrummer:
         assert ConservativePocketDrummer is not None
 
     def test_name(self) -> None:
-        assert ConservativePocketDrummer.name == "Conservative Pocket Drummer"
+        assert ConservativePocketDrummer.name == "Conservative Bunny Deluxe"
 
     def test_hysteresis_margin(self) -> None:
         assert ConservativePocketDrummer.hysteresis_margin == 0.10

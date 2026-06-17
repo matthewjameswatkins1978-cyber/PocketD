@@ -1,4 +1,4 @@
-"""Lightweight onset detection for the Pocket Drummer prototype."""
+"""Lightweight onset detection for the Bunny Deluxe prototype."""
 
 from __future__ import annotations
 

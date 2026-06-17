@@ -1,4 +1,4 @@
-"""Generate synthetic pulse events for the Pocket Drummer diagnostic path."""
+"""Generate synthetic pulse events for the Bunny Deluxe diagnostic path."""
 
 from __future__ import annotations
 

@@ -1,1 +1,1 @@
-"""Audio diagnostic helpers for Pocket Drummer."""
+"""Audio diagnostic helpers for Bunny Deluxe."""

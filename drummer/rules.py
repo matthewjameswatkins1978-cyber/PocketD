@@ -1,4 +1,4 @@
-"""Reusable frozen dataclass definitions for Pocket Drummer models.
+"""Reusable frozen dataclass definitions for Bunny Deluxe models.
 
 Rules define *possible* behaviour.
 Models (in ``drummer.models``) choose *actual* behaviour.

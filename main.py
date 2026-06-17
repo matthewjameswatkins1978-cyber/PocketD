@@ -1,4 +1,4 @@
-"""Pocket Drummer — entry point.
+"""Bunny Deluxe — entry point.
 
 Usage
 -----
@@ -23,7 +23,7 @@ from scheduler import run_hardcoded_groove
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Pocket Drummer — listen, lock, groove.",
+        description="Bunny Deluxe — listen, lock, groove.",
     )
     parser.add_argument(
         "--milestone",

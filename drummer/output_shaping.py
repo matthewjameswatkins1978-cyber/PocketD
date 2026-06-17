@@ -103,7 +103,7 @@ class OutputShapingConfig:
     """Notes with velocity at or below this are considered ghost-velocity."""
 
     # DROP output tuning
-    drop_kick_velocity: int = 80
+    drop_kick_velocity: int = 72
     """Velocity for kick note(s) during DROP."""
     drop_num_kicks: int = 1
     """Number of kick pulses during DROP (1 or 2)."""

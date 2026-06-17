@@ -1126,7 +1126,7 @@ def export_learning_summary_markdown(summary: PlaytestLearningSummary, path: str
         Output path for the markdown file.
     """
     lines: list[str] = []
-    lines.append("# Pocket Drummer Playtest Learning Summary\n")
+    lines.append("# Bunny Deluxe Playtest Learning Summary\n")
     lines.append(f"*Generated from {summary.total_entries} feedback entries*\n")
 
     # Overall
@@ -1252,7 +1252,7 @@ def _print_console_summary(summary: PlaytestLearningSummary) -> None:
     """Print a compact console summary of the learning summary."""
     sep = "=" * 60
     print(f"\n{sep}")
-    print("  POCKET DRUMMER — FEEDBACK LEARNING SUMMARY")
+    print("  BUNNY DELUXE — FEEDBACK LEARNING SUMMARY")
     print(f"{sep}")
     print(f"  Total feedback entries: {summary.total_entries}")
     print()

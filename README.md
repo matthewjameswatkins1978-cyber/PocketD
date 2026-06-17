@@ -1,4 +1,4 @@
-# Pocket Drummer
+# Bunny Deluxe
 
 A Python prototype that listens to rhythmic input, detects pulse, chooses a simple drum groove, and outputs MIDI to an external drum instrument (e.g. EZDrummer).
 

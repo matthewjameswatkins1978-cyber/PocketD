@@ -1,4 +1,4 @@
-"""Preset DrummerModel instances for the Pocket Drummer.
+"""Preset DrummerModel instances for Bunny Deluxe.
 
 Models choose *actual* behaviour (they import rule dataclasses from
 ``drummer.rules`` and compose them into named personalities).

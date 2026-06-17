@@ -1,4 +1,4 @@
-"""Confidence estimation for the Pocket Drummer analysis pipeline."""
+"""Confidence estimation for the Bunny Deluxe analysis pipeline."""
 
 from __future__ import annotations
 

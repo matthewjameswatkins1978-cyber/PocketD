@@ -40,6 +40,7 @@ from __future__ import annotations
 
 from perception.bar import BarHypothesis, BarState, BarTracker
 from perception.density import AttackDensityTracker
+from perception.detector import Detector, DetectorConfig, DetectorDiagnostics, DetectorResult
 from perception.energy import compute_energy
 from perception.event_listener import (
     AudioFrame,
@@ -57,6 +58,10 @@ __all__ = [
     "BarHypothesis",
     "BarState",
     "BarTracker",
+    "Detector",
+    "DetectorConfig",
+    "DetectorDiagnostics",
+    "DetectorResult",
     "EventListener",
     "FeatureMonitor",
     "FeatureMonitorConfig",

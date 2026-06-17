@@ -1,4 +1,4 @@
-"""Core data types for Pocket Drummer."""
+"""Core data types for Bunny Deluxe."""
 
 from __future__ import annotations
 

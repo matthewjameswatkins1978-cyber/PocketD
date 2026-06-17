@@ -1,8 +1,8 @@
-# ARCHITECTURE — Pocket Drummer
+# ARCHITECTURE — Bunny Deluxe
 
 ## Overview
 
-Pocket Drummer follows a **layered perception-to-performance pipeline**:
+Bunny Deluxe follows a **layered perception-to-performance pipeline**:
 
 ```
 Audio Input
