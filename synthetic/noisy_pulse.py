@@ -11,10 +11,42 @@ Design principle:
 
 from __future__ import annotations
 
-import copy
 import random
+from dataclasses import dataclass
 
 from audio.pulse_generator import PulseEvent, generate_pulse_events
+
+
+@dataclass(frozen=True)
+class HumanTimingProfile:
+    """A deterministic profile for human-like pulse timing.
+
+    Parameters
+    ----------
+    name:
+        Short profile label used in batch reports.
+    jitter_ms:
+        Random timing variation applied to every beat.
+    drift_ms_per_beat:
+        Linear push or drag over time. Positive values get later each beat,
+        negative values get earlier.
+    swing_ms:
+        Alternating long/short feel. Odd-numbered beats are pushed later and
+        even-numbered beats after the first are pulled earlier.
+    drop_every:
+        Optional regular missing-beat interval. For example, 7 drops every
+        seventh generated pulse.
+    extra_offbeat_every:
+        Optional regular extra hit interval. For example, 4 adds a quieter
+        offbeat after every fourth generated pulse.
+    """
+
+    name: str
+    jitter_ms: float = 0.0
+    drift_ms_per_beat: float = 0.0
+    swing_ms: float = 0.0
+    drop_every: int | None = None
+    extra_offbeat_every: int | None = None
 
 
 def make_steady_pulse(bpm: float = 120.0, bars: int = 2) -> list[PulseEvent]:
@@ -50,6 +82,77 @@ def add_timing_jitter(
     # Keep events in chronological order after jitter
     jittered.sort(key=lambda e: e.time_seconds)
     return jittered
+
+
+def make_human_pulse(
+    bpm: float = 120.0,
+    bars: int = 4,
+    profile: HumanTimingProfile | None = None,
+    seed: int | None = None,
+) -> list[PulseEvent]:
+    """Return pulse events with repeatable human-like timing imperfections.
+
+    This keeps generation separate from analysis: callers still feed the output
+    through the same onset and tempo pipeline as real detections.
+    """
+    if bpm <= 0:
+        raise ValueError("bpm must be positive")
+    if bars <= 0:
+        raise ValueError("bars must be positive")
+
+    profile = profile or HumanTimingProfile(name="steady")
+    rng = random.Random(seed)
+    interval = 60.0 / bpm
+    beat_count = bars * 4
+    pulses: list[PulseEvent] = []
+
+    for beat_index in range(beat_count):
+        if (
+            profile.drop_every is not None
+            and profile.drop_every > 0
+            and beat_index > 0
+            and beat_index % profile.drop_every == 0
+        ):
+            continue
+
+        base_time = beat_index * interval
+        jitter = rng.uniform(
+            -profile.jitter_ms / 1000.0,
+            profile.jitter_ms / 1000.0,
+        )
+        drift = beat_index * profile.drift_ms_per_beat / 1000.0
+        swing = 0.0
+        if beat_index > 0 and profile.swing_ms:
+            swing_direction = 1.0 if beat_index % 2 else -1.0
+            swing = swing_direction * profile.swing_ms / 1000.0
+
+        time_seconds = max(0.0, base_time + jitter + drift + swing)
+        strength = 1.0 if beat_index % 4 == 0 else 0.72
+        pulses.append(
+            PulseEvent(
+                time_seconds=time_seconds,
+                strength=strength,
+                label="downbeat" if beat_index % 4 == 0 else "human_pulse",
+            )
+        )
+
+        if (
+            profile.extra_offbeat_every is not None
+            and profile.extra_offbeat_every > 0
+            and beat_index > 0
+            and beat_index % profile.extra_offbeat_every == 0
+        ):
+            extra_jitter = rng.uniform(-0.015, 0.015)
+            pulses.append(
+                PulseEvent(
+                    time_seconds=max(0.0, base_time + interval * 0.5 + extra_jitter),
+                    strength=0.38,
+                    label="extra",
+                )
+            )
+
+    pulses.sort(key=lambda e: e.time_seconds)
+    return pulses
 
 
 def drop_pulse(pulses: list[PulseEvent], index: int) -> list[PulseEvent]:
