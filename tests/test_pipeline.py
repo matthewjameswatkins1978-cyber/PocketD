@@ -10,7 +10,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from drummer.pipeline import DrummerBrainPipeline, PipelineDecision, _default_groove
-from drummer.behaviour import BehaviourIntent
+from drummer.behaviour import BehaviourDecision, BehaviourIntent
 from drummer.feel import GrooveEvent
 from perception.models import MusicalEvent
 from perception.features import FeatureMonitor, FeatureMonitorConfig
@@ -366,6 +366,14 @@ class TestOutputContracts:
         p = DrummerBrainPipeline()
         d = p.process(now=0.0)
         assert isinstance(d.behaviour_intent, BehaviourIntent)
+
+    def test_decision_contains_full_behaviour_decision(self) -> None:
+        p = DrummerBrainPipeline()
+        d = p.process(now=0.0)
+        assert isinstance(d.behaviour_decision, BehaviourDecision)
+        assert d.behaviour_decision.intent == d.behaviour_intent
+        assert isinstance(d.behaviour_decision.reason, str)
+        assert isinstance(d.behaviour_decision.scores, dict)
 
     def test_raw_events_not_mutated_by_shaper(self) -> None:
         p = DrummerBrainPipeline()

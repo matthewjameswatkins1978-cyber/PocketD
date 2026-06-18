@@ -5,6 +5,8 @@ Validates core invariants of both scripted and inferred modes.
 
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -433,6 +435,66 @@ class TestInferredMode:
             _, diagnostics, schedule = run_continuous_jam(bars=bars, bpm=120.0, mode="inferred")
             assert len(diagnostics) == bars
             assert isinstance(schedule, list)
+
+    def test_engine_trace_collects_one_entry_per_bar(self) -> None:
+        trace: list[dict] = []
+        _, diagnostics, _ = run_continuous_jam(
+            bars=8,
+            bpm=120.0,
+            mode="inferred",
+            engine_trace=trace,
+        )
+        assert len(trace) == len(diagnostics) == 8
+        first = trace[0]
+        assert first["bar"] == 0
+        assert "decision_reason" in first
+        assert "decision_scores" in first
+        assert "selected_intent" in first
+        assert "rendered_intent" in first
+        assert "input_density" in first
+        assert "confidence_state_confidence" in first
+
+    def test_engine_trace_does_not_change_output(self) -> None:
+        _, diagnostics_a, events_a = run_continuous_jam(
+            bars=8,
+            bpm=120.0,
+            mode="inferred",
+        )
+        trace: list[dict] = []
+        _, diagnostics_b, events_b = run_continuous_jam(
+            bars=8,
+            bpm=120.0,
+            mode="inferred",
+            engine_trace=trace,
+        )
+        assert diagnostics_b == diagnostics_a
+        assert events_b == events_a
+
+    def test_engine_trace_cli_writes_valid_json(self, tmp_path) -> None:
+        trace_path = tmp_path / "engine_trace.json"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(PROJECT_ROOT / "demo_continuous_jam_midi.py"),
+                "--no-play",
+                "--bars",
+                "4",
+                "--mode",
+                "inferred",
+                "--engine-trace",
+                str(trace_path),
+            ],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert "Engine Decision Trace exported" in result.stdout
+        payload = json.loads(trace_path.read_text(encoding="utf-8"))
+        assert isinstance(payload, list)
+        assert len(payload) == 4
+        assert payload[0]["bar"] == 0
+        assert "decision_reason" in payload[0]
 
 
 # ============================================================================

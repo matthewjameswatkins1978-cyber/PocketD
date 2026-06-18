@@ -21,7 +21,11 @@ from typing import Optional
 
 from perception.models import MusicalEvent
 from perception.features import FeatureMonitor, FeatureSnapshot
-from drummer.behaviour import BehaviourIntent, FeatureDrivenBehaviourEngine
+from drummer.behaviour import (
+    BehaviourDecision,
+    BehaviourIntent,
+    FeatureDrivenBehaviourEngine,
+)
 from drummer.output_shaping import BehaviourOutputShaper
 from drummer.feel import GrooveEvent
 
@@ -75,6 +79,9 @@ class PipelineDecision:
 
     behaviour_intent: BehaviourIntent
     """The behaviour decision for this moment."""
+
+    behaviour_decision: BehaviourDecision
+    """Full decision, including confidence, reason, and scores."""
 
     raw_events: list[GrooveEvent] = field(default_factory=list)
     """The groove events before shaping (the pattern the drummer would play)."""
@@ -190,6 +197,7 @@ class DrummerBrainPipeline:
             timestamp=now,
             feature_snapshot=snapshot,
             behaviour_intent=intent,
+            behaviour_decision=behaviour_decision,
             raw_events=raw_events,
             shaped_events=shaped_events,
             phase_alignment=phase_alignment,

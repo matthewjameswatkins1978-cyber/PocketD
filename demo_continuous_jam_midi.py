@@ -1128,6 +1128,7 @@ def run_continuous_jam(
     preset_name: str = "normal",
     playtest_variation: str = "",
     scenario: str = "enter",
+    engine_trace: list[dict] | None = None,
 ) -> tuple[
     DrummerBrainPipeline,
     list[dict],  # per-bar diagnostics
@@ -1153,6 +1154,8 @@ def run_continuous_jam(
     scenario : str
         Scenario name for timeline form (``"enter"``, ``"build"``, ``"drop"``,
         ``"anchor_recovery"``, ``"final_bail"``).
+    engine_trace : list[dict] | None
+        Optional collector for per-bar Engine Decision Trace records.
 
     Returns
     -------
@@ -1234,6 +1237,7 @@ def run_continuous_jam(
             phase = _phase_for_section(section, playtest_variation)
 
         # Process at end of bar to get intent
+        previous_intent = engine.previous_intent
         d = pipeline.process(now=bar_end, phase_alignment=phase)
         inferred_intent = d.behaviour_intent
         snap = d.feature_snapshot
@@ -1314,6 +1318,34 @@ def run_continuous_jam(
         # Update confidence state after intent is decided
         confidence_state.update(snap, intent)
         confidence = confidence_state.confidence
+
+        if engine_trace is not None:
+            engine_trace.append({
+                "bar": bar,
+                "time": bar_start,
+                "section": section,
+                "previous_intent": previous_intent.value,
+                "selected_intent": inferred_intent.value,
+                "rendered_intent": intent.value,
+                "arrangement_intent": arrangement_intent.value,
+                "decision_confidence": d.behaviour_decision.confidence,
+                "decision_reason": d.behaviour_decision.reason,
+                "decision_scores": d.behaviour_decision.scores,
+                "input_density": snap.input_density,
+                "strength_ema": snap.strength_ema,
+                "fast_strength_ema": snap.fast_strength_ema,
+                "slow_strength_ema": snap.slow_strength_ema,
+                "change_score": snap.change_score,
+                "silence_duration": snap.silence_duration,
+                "player_certainty": snap.player_certainty,
+                "repetition_stability": snap.repetition_stability,
+                "phase_alignment": snap.phase_alignment,
+                "has_entered": engine.has_entered,
+                "anchor_bar_count": getattr(engine, "_anchor_bar_count", 0),
+                "confidence_state_confidence": confidence_state.confidence,
+                "confidence_state_stable_bars": confidence_state.stable_bars,
+                "confidence_state_unstable_bars": confidence_state.unstable_bars,
+            })
 
         # Apply confidence to arrangement intensity scaling
         # Higher confidence → slightly higher velocity_scale and hat density
@@ -2060,6 +2092,11 @@ def main() -> int:
     parser.add_argument("--export-json", type=str, default=None,
                         metavar="PATH",
                         help="Export per-bar diagnostics as JSON to PATH")
+    parser.add_argument("--engine-trace", type=str, default=None,
+                        metavar="PATH",
+                        help="Export per-bar Engine Decision Trace as JSON to PATH")
+    parser.add_argument("--print-engine-trace", action="store_true",
+                        help="Print a compact Engine Decision Trace table")
     args = parser.parse_args()
 
     do_play = not args.no_play
@@ -2068,6 +2105,8 @@ def main() -> int:
     mode = args.mode
     preset_name = args.preset
     export_path = args.export_json
+    do_trace = args.engine_trace is not None or args.print_engine_trace
+    trace_data: list[dict] | None = [] if do_trace else None
 
     # Handle compare-presets mode
     if args.compare_presets:
@@ -2108,6 +2147,7 @@ def main() -> int:
     pipeline, diagnostics, global_events = run_continuous_jam(
         bars=bars, bpm=bpm, mode=mode, preset_name=preset_name,
         scenario=args.scenario, playtest_variation=args.playtest_variation,
+        engine_trace=trace_data,
     )
 
     # Print diagnostics
@@ -2133,6 +2173,23 @@ def main() -> int:
         }
         export_diagnostics_to_json(diagnostics, export_path, meta=meta)
         print(f"\n  Exported diagnostics to: {export_path}")
+
+    if args.engine_trace and trace_data is not None:
+        import json
+        import os
+        trace_path = args.engine_trace
+        out_dir = os.path.dirname(trace_path)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        with open(trace_path, "w", encoding="utf-8") as f:
+            json.dump(trace_data, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+        print(f"\n  Engine Decision Trace exported to: {trace_path}")
+
+    if args.print_engine_trace and trace_data is not None:
+        from drummer.engine_trace import render_engine_trace_table
+        print()
+        print(render_engine_trace_table(trace_data))
 
     # MIDI playback
     if do_play:
