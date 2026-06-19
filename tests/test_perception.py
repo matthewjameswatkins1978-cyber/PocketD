@@ -368,6 +368,24 @@ class TestEventListener:
         assert len(first) >= 1
         assert second == []
 
+    def test_streaming_timestamps_stay_inside_the_source_frame(self) -> None:
+        sample_rate = 1000
+        listener = EventListener(sample_rate=sample_rate, min_interval=0.05)
+
+        # Prime the rolling buffer, then place an impulse in a later frame.
+        listener.process_frame(
+            AudioFrame(np.zeros(100), sample_rate, time_seconds=10.1)
+        )
+        samples = np.zeros(100)
+        samples[50] = 1.0
+        listener.process_frame(
+            AudioFrame(samples, sample_rate, time_seconds=10.2)
+        )
+
+        events = listener.flush()
+        assert events
+        assert all(10.1 <= event.time_seconds <= 10.2 for event in events)
+
 
 # ─── AudioFrame Tests ──────────────────────────────────────────────
 

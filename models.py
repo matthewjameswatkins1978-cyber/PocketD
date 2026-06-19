@@ -51,6 +51,12 @@ class Groove:
     energy: int
     density: str
     risk: str
+    # Simple Brain metadata (optional — safe defaults)
+    simple_brain_enabled: bool = False
+    ideal_density: str = ""
+    min_stability: float = 0.0
+    feel_tags: list[str] = field(default_factory=list)
+    description: str = ""
 
 
 @dataclass

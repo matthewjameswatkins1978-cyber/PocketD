@@ -9,6 +9,11 @@ grooves:
     energy: 3
     density: medium
     risk: low
+    simple_brain_enabled: true
+    ideal_density: dense
+    min_stability: 0.45
+    feel_tags: [straight, backbeat, rock, safe]
+    description: "Straight rock backbeat with kick on 1 and 3, snare on 2 and 4."
 
   - id: motorik
     name: Motorik
@@ -20,6 +25,11 @@ grooves:
     energy: 4
     density: high
     risk: low
+    simple_brain_enabled: true
+    ideal_density: dense
+    min_stability: 0.55
+    feel_tags: [driving, four_on_floor, steady]
+    description: "Driving quarter-note kick pulse with steady hats."
 
   - id: half_time
     name: Half Time
@@ -31,6 +41,11 @@ grooves:
     energy: 2
     density: low
     risk: low
+    simple_brain_enabled: true
+    ideal_density: sparse
+    min_stability: 0.35
+    feel_tags: [spacious, half_time, weighty]
+    description: "Sparse half-time groove with snare emphasis later in the bar."
 
   - id: shuffle
     name: Shuffle
@@ -42,6 +57,11 @@ grooves:
     energy: 3
     density: medium
     risk: medium
+    simple_brain_enabled: true
+    ideal_density: medium
+    min_stability: 0.45
+    feel_tags: [shuffle, swung, medium]
+    description: "Medium-density shuffle-like pocket."
 
   - id: funk_pocket
     name: Funk Pocket
@@ -53,6 +73,11 @@ grooves:
     energy: 4
     density: high
     risk: medium
+    simple_brain_enabled: true
+    ideal_density: dense
+    min_stability: 0.50
+    feel_tags: [syncopated, busy, funk]
+    description: "Busier syncopated funk pocket."
 
   - id: punk_drive
     name: Punk Drive
@@ -64,3 +89,8 @@ grooves:
     energy: 5
     density: high
     risk: high
+    simple_brain_enabled: true
+    ideal_density: dense
+    min_stability: 0.60
+    feel_tags: [driving, aggressive, high_energy]
+    description: "High-energy driving beat."

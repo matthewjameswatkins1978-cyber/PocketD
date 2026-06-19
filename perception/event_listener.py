@@ -293,9 +293,13 @@ class EventListener:
                     and smoothed[idx] >= smoothed[idx + 1]
                     and smoothed[idx] > threshold
                 ):
+                    # ``idx`` is relative to the retained rolling buffer, not
+                    # merely the newest frame. Anchor it at the beginning of
+                    # that full buffer so timestamps remain in the caller's
+                    # clock domain as frames accumulate.
                     timestamp = (idx / self._sample_rate) + (
                         frame.time_seconds
-                        - len(samples_f) / self._sample_rate
+                        - len(buffer_array) / self._sample_rate
                     )
 
                     # Enforce min interval
