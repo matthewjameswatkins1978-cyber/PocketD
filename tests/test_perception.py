@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 # Ensure project root is in path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -367,6 +368,87 @@ class TestEventListener:
         second = listener.flush()
         assert len(first) >= 1
         assert second == []
+
+    def test_streaming_timestamps_stay_inside_the_source_frame(self) -> None:
+        sample_rate = 1000
+        listener = EventListener(sample_rate=sample_rate, min_interval=0.05)
+
+        # Prime the rolling buffer, then place an impulse in a later frame.
+        listener.process_frame(
+            AudioFrame(np.zeros(100), sample_rate, time_seconds=10.1)
+        )
+        samples = np.zeros(100)
+        samples[50] = 1.0
+        listener.process_frame(
+            AudioFrame(samples, sample_rate, time_seconds=10.2)
+        )
+
+        events = listener.flush()
+        assert events
+        assert all(10.1 <= event.time_seconds <= 10.2 for event in events)
+
+    def test_streaming_ignores_low_level_interface_noise(self) -> None:
+        sample_rate = 1000
+        listener = EventListener(sample_rate=sample_rate, min_interval=0.05)
+        rng = np.random.default_rng(42)
+
+        for index in range(20):
+            noise = rng.normal(0.0, 0.00005, 50)
+            listener.process_frame(
+                AudioFrame(noise, sample_rate, time_seconds=(index + 1) * 0.05)
+            )
+
+        assert listener.flush() == []
+
+    def test_streaming_detects_repeated_claps_in_small_live_blocks(self) -> None:
+        sample_rate = 4000
+        block_size = 64
+        signal = np.zeros(sample_rate * 3)
+        for clap_time in (0.5, 1.0, 1.5, 2.0, 2.5):
+            start = int(clap_time * sample_rate)
+            burst = np.exp(-np.arange(120) / 25.0) * 0.1
+            signal[start:start + len(burst)] += burst
+
+        listener = EventListener(sample_rate=sample_rate, min_interval=0.2)
+        for start in range(0, len(signal), block_size):
+            samples = signal[start:start + block_size]
+            listener.process_frame(
+                AudioFrame(
+                    samples,
+                    sample_rate,
+                    time_seconds=(start + len(samples)) / sample_rate,
+                )
+            )
+
+        event_times = [event.time_seconds for event in listener.flush()]
+        assert len(event_times) == 5
+        assert event_times == pytest.approx((0.5, 1.0, 1.5, 2.0, 2.5), abs=0.02)
+
+    def test_streaming_strength_preserves_loud_soft_accents(self) -> None:
+        sample_rate = 4000
+        block_size = 64
+        signal = np.zeros(sample_rate * 2)
+        for clap_time, amplitude in ((0.5, 0.2), (1.0, 0.04), (1.5, 0.04)):
+            start = int(clap_time * sample_rate)
+            burst = np.exp(-np.arange(120) / 25.0) * amplitude
+            signal[start:start + len(burst)] += burst
+
+        listener = EventListener(sample_rate=sample_rate, min_interval=0.2)
+        for start in range(0, len(signal), block_size):
+            samples = signal[start:start + block_size]
+            listener.process_frame(
+                AudioFrame(
+                    samples,
+                    sample_rate,
+                    time_seconds=(start + len(samples)) / sample_rate,
+                )
+            )
+
+        strengths = [event.strength for event in listener.flush()]
+        assert len(strengths) == 3
+        assert strengths[0] == pytest.approx(1.0)
+        assert strengths[1] < 0.4
+        assert strengths[2] < 0.4
 
 
 # ─── AudioFrame Tests ──────────────────────────────────────────────

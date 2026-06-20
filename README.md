@@ -15,6 +15,50 @@ A Python prototype for a behavioural MIDI drummer. Bunny Deluxe listens to rhyth
 - Exports MIDI files or sends live MIDI to a virtual port / drum instrument.
 - Prints or exports engine decision traces so behaviour can be debugged bar by bar.
 
+## Simple Brain v0
+
+A lightweight, explainable beat-selection engine (`drummer/simple_brain.py`) that follows a **Lock → Choose → Hold → Relisten** cycle:
+
+1. **Lock** — listen until the player is confident enough (4+ snapshots above threshold)
+2. **Choose** — score all beats from `data/grooves.yaml` against current density, stability, and confidence, then pick the best match
+3. **Hold** — keep the chosen beat unless a major, high-confidence musical change occurs
+4. **Relisten** — if confidence collapses, dump state and return to listening
+
+### Beat knowledge layer
+
+Simple Brain chooses from real beat definitions in `data/grooves.yaml`.
+Every non-silence beat it can choose is a real groove ID.  `silence` is
+the only special sentinel — it has no corresponding groove data.
+
+To add a new beat that Simple Brain can select:
+1. Add the groove pattern to `data/grooves.yaml`
+2. Set `simple_brain_enabled: true` and include the required metadata fields (`ideal_density`, `min_stability`, `description`, `feel_tags`)
+
+The existing complex behaviour engine (`drummer/behaviour.py`) is preserved untouched as legacy/research.
+
+**Enabled grooves:** `simple_rock`, `motorik`, `half_time`, `shuffle`, `funk_pocket`, `punk_drive`
+
+Run the diagnostic demo:
+
+```powershell
+python demo_simple_brain.py
+```
+
+Run the named trace scenario demo (inspired by existing Bunny Deluxe playtest forms):
+```powershell
+python demo_simple_brain_scenarios.py
+```
+
+Run the shadow-mode demo (Simple Brain over real FeatureMonitor output):
+```powershell
+python demo_simple_brain_shadow.py
+```
+
+Run the full Simple Brain test suite (unit + batch + trace + database):
+```powershell
+python -m pytest tests/test_simple_brain.py tests/test_simple_brain_batch.py tests/test_simple_brain_trace.py tests/test_simple_brain_shadow.py tests/test_simple_brain_groove_database.py -v
+```
+
 ## Project Docs
 
 This README is the quick-start and current-state overview. The deeper project story lives in:
@@ -45,6 +89,48 @@ On **Python 3.14**, `python-rtmidi` has no prebuilt wheel yet. The app automatic
 
 ```powershell
 python main.py --list-ports
+```
+
+## Bunny V1 live pocket
+
+Bunny V1 is the conservative live vertical slice: listen for an unambiguous
+pulse and bar phase, arm for a future downbeat, play a locked straight pocket,
+degrade safely when evidence weakens, and optionally mirror one repeated kick
+slot. It is separate from Simple Brain and the larger behaviour engine.
+
+The hardware runner is explicitly opt-in. With no arguments it opens nothing:
+
+```powershell
+.\.venv\Scripts\python.exe demo_live_clap_to_loopmidi.py
+```
+
+Check routing first:
+
+```powershell
+.\.venv\Scripts\python.exe demo_live_clap_to_loopmidi.py --list-audio
+.\.venv\Scripts\python.exe demo_live_clap_to_loopmidi.py --list-midi
+```
+
+Then run a bounded 30-second playtest:
+
+```powershell
+.\.venv\Scripts\python.exe demo_live_clap_to_loopmidi.py --run-live --device-name "AG06/AG03" --channel 1 --port "PocketDrummer Out" --duration 30
+```
+
+Use `--no-midi` to exercise audio, perception, and control without emitting
+notes. Every live run writes a JSON diagnostic trace under
+`artifacts/bunny_live/`, including state transitions, detected events, locked
+BPM/grid, scheduler jitter/drops, and audio callback overflow counts. Press
+**Ctrl+C** for an explicit stop and MIDI close.
+
+The values in `LiveConfig` remain initial tuning hypotheses. Adjust them only
+from trace-backed playtest evidence; do not bury tuned thresholds in runtime
+logic.
+
+Run the complete hardware-free Bunny suite:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q tests/test_live_*.py
 ```
 
 ## Basic MIDI Groove

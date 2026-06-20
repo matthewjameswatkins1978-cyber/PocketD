@@ -8,20 +8,40 @@ import statistics
 def estimate_tempo(onset_times: list[float]) -> float:
     """Estimate BPM from a list of onset timestamps.
 
-    The detector uses the median inter-onset interval and treats short intervals
-    as eighth-note spacing, which keeps the prototype stable for live playing.
+    The detector uses median timing across one-, two-, and four-beat spans where
+    possible. Longer spans make the estimate more tolerant of human push/pull
+    and alternating long-short timing while staying deterministic.
+
+    Very short per-beat intervals are treated as eighth-note spacing, which
+    keeps the prototype stable for dense live input.
     """
     if len(onset_times) < 2:
         return 120.0
 
-    intervals = [b - a for a, b in zip(onset_times, onset_times[1:]) if b > a]
-    if not intervals:
+    span_estimates: list[float] = []
+    for span in (1, 2, 4):
+        if len(onset_times) <= span:
+            continue
+
+        candidates: list[float] = []
+        intervals: list[float] = []
+        for start_index in range(len(onset_times) - span):
+            elapsed = onset_times[start_index + span] - onset_times[start_index]
+            if elapsed <= 0:
+                continue
+
+            interval_per_beat = elapsed / span
+            intervals.append(interval_per_beat)
+            candidates.append(60.0 / interval_per_beat)
+
+        if candidates:
+            span_bpm = statistics.median(candidates)
+            if intervals and statistics.median(intervals) < 0.35:
+                span_bpm *= 0.5
+            span_estimates.append(span_bpm)
+
+    if not span_estimates:
         return 120.0
 
-    interval = statistics.median(intervals)
-    if interval <= 0:
-        return 120.0
-
-    # Short intervals usually represent eighth-note pulses in the live input.
-    bpm = 30.0 / interval if interval < 0.35 else 60.0 / interval
+    bpm = statistics.median(span_estimates)
     return max(40.0, min(240.0, bpm))

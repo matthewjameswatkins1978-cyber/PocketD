@@ -31,6 +31,12 @@ def load_grooves(path: Path | None = None) -> dict[str, Groove]:
             energy=item["energy"],
             density=item["density"],
             risk=item["risk"],
+            # Simple Brain metadata (optional — safe defaults from Groove dataclass)
+            simple_brain_enabled=item.get("simple_brain_enabled", False),
+            ideal_density=item.get("ideal_density", ""),
+            min_stability=float(item.get("min_stability", 0.0)),
+            feel_tags=list(item.get("feel_tags", [])),
+            description=item.get("description", ""),
         )
         grooves[groove.id] = groove
     return grooves
