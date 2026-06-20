@@ -41,6 +41,12 @@ def _make_config(**overrides) -> LiveConfig:
     return LiveConfig(**kwargs)
 
 
+def test_default_tempo_relock_is_conservative_for_human_drift() -> None:
+    config = LiveConfig()
+    assert config.tempo_drift_fraction == pytest.approx(0.10)
+    assert config.tempo_drift_dwell_beats == pytest.approx(8.0)
+
+
 def _pulse(
     *,
     now: float = 0.0,
@@ -278,10 +284,10 @@ def test_playing_to_degraded_on_sustained_low_confidence():
     assert ctrl.state == "DEGRADED"
 
 
-# ── DEGRADED → STOPPED (silence) ─────────────────────────────────────
+# ── DEGRADED holds the clock through silence ──────────────────────────
 
 
-def test_degraded_to_stopped_on_silence_timeout():
+def test_degraded_keeps_locked_clock_through_silence():
     clock = FakeClock(100.0)
     config = _make_config(
         entry_min_evidence_beats=0.5,
@@ -317,7 +323,8 @@ def test_degraded_to_stopped_on_silence_timeout():
         _pulse(now=clock.now(), bpm=120.0, confidence=0.15, evidence_age=5.0),
         _bar(now=clock.now(), bpm=120.0, confidence=0.15, evidence_age=5.0),
     )
-    assert snap.state == "STOPPED"
+    assert snap.state == "DEGRADED"
+    assert snap.locked_bpm == 120.0
 
 
 # ── Explicit stop ────────────────────────────────────────────────────
@@ -413,7 +420,7 @@ def test_degraded_to_playing_on_recovery():
     assert ctrl.state == "PLAYING"
 
 
-def test_sustained_tempo_drift_degrades_then_relocks_on_future_downbeat():
+def test_sustained_tempo_drift_does_not_change_the_playing_clock():
     clock = FakeClock(200.0)
     config = _make_config(
         entry_min_evidence_beats=0.5,
@@ -435,34 +442,14 @@ def test_sustained_tempo_drift_degrades_then_relocks_on_future_downbeat():
     )
     assert ctrl.state == "PLAYING"
 
-    for _ in range(8):
+    for _ in range(24):
         clock.advance(0.25)
         ctrl.update(
             _pulse(now=clock.now(), bpm=132.0, confidence=0.8),
             _bar(now=clock.now(), bpm=132.0, confidence=0.8),
         )
-        if ctrl.state == "DEGRADED":
-            break
-    assert ctrl.state == "DEGRADED"
-
-    clock.advance(0.1)
-    ctrl.update(
-        _pulse(now=clock.now(), bpm=132.0, confidence=0.8),
-        _bar(now=clock.now(), bpm=132.0, confidence=0.8),
-    )
-    assert ctrl.state == "LISTENING"
-    assert ctrl.locked_bpm is None
-
-    for _ in range(12):
-        clock.advance(0.25)
-        ctrl.update(
-            _pulse(now=clock.now(), bpm=132.0, confidence=0.8),
-            _bar(now=clock.now(), bpm=132.0, confidence=0.8),
-        )
-        if ctrl.state == "PLAYING":
-            break
     assert ctrl.state == "PLAYING"
-    assert ctrl.locked_bpm == 132.0
+    assert ctrl.locked_bpm == 120.0
 
 
 # ── Locked BPM stability under flutter ────────────────────────────────

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import queue
 from dataclasses import dataclass
 from typing import Any
@@ -27,6 +28,7 @@ class PortAudioClockBridge:
     def __init__(self, clock: MonotonicClock) -> None:
         self._clock = clock
         self._offset: float | None = None
+        self._last_frame_end: float | None = None
 
     def frame_end(
         self,
@@ -35,17 +37,48 @@ class PortAudioClockBridge:
         sample_rate: float,
     ) -> float:
         now = self._clock()
+        frame_duration = frames / sample_rate
         try:
             current_time = _time_field(time_info, "currentTime")
             input_start = _time_field(time_info, "inputBufferAdcTime")
         except (AttributeError, KeyError, TypeError, ValueError):
-            return now
-        if self._offset is None:
-            self._offset = now - current_time
-        return self._offset + input_start + frames / sample_rate
+            current_time = float("nan")
+            input_start = float("nan")
+
+        # Some Windows MME drivers report ``currentTime == 0`` forever and
+        # periodically reset ``inputBufferAdcTime`` to zero.  Treat those
+        # values as unavailable: trusting them makes every block appear to
+        # occupy the same few milliseconds and suppresses all later onsets.
+        metadata_valid = (
+            math.isfinite(current_time)
+            and math.isfinite(input_start)
+            and current_time > 0.0
+            and input_start >= 0.0
+        )
+        candidate: float | None = None
+        if metadata_valid:
+            if self._offset is None:
+                self._offset = now - current_time
+            candidate = self._offset + input_start + frame_duration
+            if (
+                self._last_frame_end is not None
+                and candidate <= self._last_frame_end
+            ):
+                candidate = None
+
+        if candidate is None:
+            candidate = (
+                now
+                if self._last_frame_end is None
+                else self._last_frame_end + frame_duration
+            )
+
+        self._last_frame_end = candidate
+        return candidate
 
     def reset(self) -> None:
         self._offset = None
+        self._last_frame_end = None
 
 
 @dataclass(frozen=True)
@@ -84,6 +117,7 @@ class LiveAudioIngress:
         self.channel_index = channel_index
         self._bridge = PortAudioClockBridge(clock)
         self._queue: queue.Queue[QueuedAudioBlock] = queue.Queue(max_blocks)
+        self._accepting = True
         self.diag = AudioIngressDiagnostics()
 
     def callback(
@@ -98,6 +132,8 @@ class LiveAudioIngress:
         status_text = str(status) if status else ""
         if status_text:
             self.diag.status_events += 1
+        if not self._accepting:
+            return
         data = np.asarray(indata)
         if data.ndim == 1:
             if self.channel_index != 0:
@@ -128,6 +164,17 @@ class LiveAudioIngress:
             except queue.Empty:
                 break
         return blocks
+
+    def pause(self) -> None:
+        """Discard callback audio without treating it as a queue overflow."""
+        self._accepting = False
+        self.drain()
+
+    def resume(self) -> None:
+        """Resume capture with a fresh audio-to-monotonic clock bridge."""
+        self.drain()
+        self._bridge.reset()
+        self._accepting = True
 
     @property
     def queue_depth(self) -> int:

@@ -84,13 +84,13 @@ class LiveRuntime:
             return self._snapshot(self._controller.stop())
 
         pulse = self._pulse_adapter.adapt()
-        bar = self._bar_adapter.adapt()
+        bar = self._bar_adapter.adapt(reference_bpm=pulse.winning_bpm)
         control = self._controller.update(pulse, bar)
 
         self._synchronise_generation()
         self._handle_state_change(control.state)
 
-        if control.state == "PLAYING":
+        if control.state in {"PLAYING", "DEGRADED"}:
             self._finish_crossed_bars(control.current_bar_index)
             self._plan_horizon(control.current_bar_index)
 
@@ -149,11 +149,14 @@ class LiveRuntime:
             self._known_generation = generation
 
     def _handle_state_change(self, state: str) -> None:
-        if state == "PLAYING" and self._previous_state != "PLAYING":
+        active_states = {"PLAYING", "DEGRADED"}
+        if state in active_states and self._previous_state not in active_states:
             # A new entry starts at bar zero. Recovery preserves the absolute
             # locked bar index, so begin completion tracking immediately before it.
             self._last_completed_bar = self._controller.bar_index - 1
-        elif self._previous_state == "PLAYING" and state != "PLAYING":
+        if self._previous_state == "PLAYING" and state == "DEGRADED":
+            self._mirror_observer.reset()
+        elif self._previous_state in active_states and state not in active_states:
             self._mirror_observer.reset()
             self._last_completed_bar = None
 

@@ -51,10 +51,10 @@ class LiveConfig:
     # ── Tempo / bar freshness ──
     max_evidence_age_beats: float = 2.0
     """Maximum age of evidence (beats) before it is considered stale."""
-    tempo_drift_fraction: float = 0.05
-    """Relative BPM change that triggers re-lock (5%)."""
-    tempo_drift_dwell_beats: float = 2.0
-    """Beats of sustained drift before re-lock."""
+    tempo_drift_fraction: float = 0.10
+    """Relative BPM change that can trigger re-lock (10%)."""
+    tempo_drift_dwell_beats: float = 8.0
+    """Beats of sustained drift before re-lock (two 4/4 bars)."""
 
     # ── Quantisation ──
     quantisation_tolerance_beats: float = 0.25

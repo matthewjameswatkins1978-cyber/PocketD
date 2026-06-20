@@ -30,6 +30,25 @@ def test_bridge_falls_back_to_callback_clock_without_time_metadata() -> None:
     assert bridge.frame_end({}, 128, 44100) == 50.0
 
 
+def test_bridge_advances_by_samples_when_windows_driver_times_are_zero() -> None:
+    clock = FakeClock(50.0)
+    bridge = PortAudioClockBridge(clock.now)
+    broken_mme_time = {
+        "currentTime": 0.0,
+        "inputBufferAdcTime": 0.0,
+    }
+
+    first = bridge.frame_end(broken_mme_time, 100, 1000)
+    second = bridge.frame_end(broken_mme_time, 100, 1000)
+    third = bridge.frame_end(
+        {"currentTime": 0.0, "inputBufferAdcTime": 0.1}, 100, 1000
+    )
+
+    assert first == pytest.approx(50.0)
+    assert second == pytest.approx(50.1)
+    assert third == pytest.approx(50.2)
+
+
 def test_audio_callback_copies_selected_channel_and_timestamp() -> None:
     clock = FakeClock(100.0)
     ingress = LiveAudioIngress(1000, 1, clock.now)
@@ -63,3 +82,21 @@ def test_audio_callback_never_blocks_when_queue_is_full() -> None:
     assert ingress.diag.callbacks == 2
     assert ingress.diag.dropped_blocks == 1
     assert ingress.diag.status_events == 1
+
+
+def test_paused_ingress_discards_count_in_without_reporting_drops() -> None:
+    clock = FakeClock(100.0)
+    ingress = LiveAudioIngress(1000, 0, clock.now, max_blocks=1)
+    samples = np.zeros((10, 1), dtype=np.float32)
+    info = {"currentTime": 0.0, "inputBufferAdcTime": 0.0}
+
+    ingress.pause()
+    for _ in range(5):
+        ingress.callback(samples, 10, info, None)
+    ingress.resume()
+    ingress.callback(samples, 10, info, None)
+
+    assert ingress.diag.callbacks == 6
+    assert ingress.diag.dropped_blocks == 0
+    assert ingress.diag.queued_blocks == 1
+    assert ingress.queue_depth == 1

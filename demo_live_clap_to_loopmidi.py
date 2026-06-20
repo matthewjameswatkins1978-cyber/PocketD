@@ -14,7 +14,7 @@ import time
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 try:
     import sounddevice as sd  # type: ignore[import-untyped]
@@ -39,6 +39,7 @@ DEFAULT_MIDI_PORT = "PocketDrummer Out"
 DEFAULT_SAMPLE_RATE = 44100
 DEFAULT_BLOCK_SIZE = 256
 TRACE_DIR = Path(__file__).resolve().parent / "artifacts" / "bunny_live"
+COUNT_IN_NOTE = 42
 
 
 class _NullMidiSink:
@@ -53,6 +54,19 @@ class _NullMidiSink:
 
     def close(self) -> None:
         self.is_open = False
+
+
+def play_count_in(
+    sink: object,
+    count: int,
+    interval_seconds: float,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Play an audible closed-hat count-in before live evidence is consumed."""
+    for beat in range(count):
+        velocity = 110 if beat == count - 1 else 85
+        sink.send_note(COUNT_IN_NOTE, velocity, 9)  # type: ignore[attr-defined]
+        sleep(interval_seconds)
 
 
 def list_input_devices() -> list[tuple[int, str, int]]:
@@ -133,6 +147,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--block-size", type=int, default=DEFAULT_BLOCK_SIZE)
     parser.add_argument("--tick-ms", type=float, default=1.0)
     parser.add_argument("--min-interval", type=float, default=0.08)
+    parser.add_argument("--count-in", type=int, default=4, help="audible MIDI clicks before capture")
+    parser.add_argument("--count-in-bpm", type=float, default=120.0)
     parser.add_argument("--trace", type=Path, default=None)
     return parser.parse_args(argv)
 
@@ -166,8 +182,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.channel < 1 or args.sample_rate <= 0 or args.block_size <= 0:
         print("channel, sample rate, and block size must be positive", file=sys.stderr)
         return 2
-    if args.duration < 0 or args.tick_ms <= 0:
-        print("duration cannot be negative and tick-ms must be positive", file=sys.stderr)
+    if args.duration < 0 or args.tick_ms <= 0 or args.count_in < 0 or args.count_in_bpm <= 0:
+        print("duration/count-in cannot be negative and timing values must be positive", file=sys.stderr)
         return 2
 
     try:
@@ -210,6 +226,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     ingress = LiveAudioIngress(
         args.sample_rate, args.channel - 1, clock, max_blocks=256
     )
+    if args.count_in:
+        ingress.pause()
 
     event_records: list[dict[str, object]] = []
 
@@ -252,6 +270,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             blocksize=args.block_size,
             callback=ingress.callback,
         ):
+            if args.count_in:
+                print(f"  GET READY: {args.count_in} audible clicks, then start clapping", flush=True)
+                play_count_in(sink, args.count_in, 60.0 / args.count_in_bpm)
+                # Do not let speaker bleed from the count-in become musical evidence.
+                ingress.resume()
+            started = clock()
+            print("  GO: clap now", flush=True)
             while args.duration == 0 or clock() - started < args.duration:
                 for block in ingress.drain():
                     listener.process_frame(

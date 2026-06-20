@@ -468,47 +468,16 @@ class LiveController:
             )
             return
 
-        # Check for silence (no events arriving)
-        silence_duration = max(pulse.evidence_age, bar.evidence_age)
-        if silence_duration > cfg.silence_stop_timeout:
-            self._transition_to(
-                _State.STOPPED,
-                f"silence timeout: {silence_duration:.1f}s > {cfg.silence_stop_timeout:.1f}s",
-                now,
-            )
-            return
-
         # Track beats of silence
+        silence_duration = max(pulse.evidence_age, bar.evidence_age)
         if silence_duration > 0 and self._beat_period is not None:
             self._silence_beats = silence_duration / self._beat_period
         else:
             self._silence_beats = 0.0
 
-        # ── Drift detection ──
-        if (
-            pulse.winning_bpm is not None
-            and self._locked_bpm is not None
-            and self._last_pulse is not None
-            and self._last_pulse.winning_bpm is not None
-        ):
-            bpm_diff = abs(pulse.winning_bpm - self._locked_bpm)
-            if bpm_diff / self._locked_bpm > cfg.tempo_drift_fraction:
-                elapsed = now - self._last_pulse.computed_at
-                self._tempo_drift_beats += min(
-                    elapsed / self._beat_period, 0.5
-                )
-                if self._tempo_drift_beats >= cfg.tempo_drift_dwell_beats:
-                    self._requires_relock = True
-                    self._transition_to(
-                        _State.DEGRADED,
-                        f"tempo drift: {pulse.winning_bpm:.1f} vs locked {self._locked_bpm:.1f}",
-                        now,
-                    )
-                    return
-            else:
-                self._tempo_drift_beats = max(
-                    0.0, self._tempo_drift_beats - 0.25
-                )
+        # The playing clock is intentionally independent of later tracker
+        # estimates. Once Bunny enters, human drift affects confidence and
+        # optional additions only; it never rewrites or stops the anchor grid.
 
     # ── DEGRADED ──────────────────────────────────────────────────────
 
@@ -520,16 +489,6 @@ class LiveController:
     ) -> None:
         """Hold the locked clock, watch for recovery or silence timeout."""
         cfg = self._config
-
-        # A confidently changed tempo must return through LISTENING/ARMED so
-        # the new grid can only lock on a newly predicted future downbeat.
-        if (
-            self._requires_relock
-            and pulse.winning_bpm is not None
-            and pulse.winning_confidence >= cfg.recovery_confidence_threshold
-        ):
-            self._transition_to(_State.LISTENING, "tempo drift requires re-lock", now)
-            return
 
         if pulse.winning_bpm is None or self._beat_period is None:
             self._silence_beats += 0.25
@@ -546,16 +505,6 @@ class LiveController:
             silence_duration = max(pulse.evidence_age, bar.evidence_age)
             if self._beat_period > 0:
                 self._silence_beats = silence_duration / self._beat_period
-
-        # Check silence stop timeout
-        silence_duration = max(pulse.evidence_age, bar.evidence_age)
-        if silence_duration > cfg.silence_stop_timeout:
-            self._transition_to(
-                _State.STOPPED,
-                f"degraded silence timeout: {silence_duration:.1f}s",
-                now,
-            )
-            return
 
         # Check recovery. First arm a boundary on the controller's locked
         # grid, then remain DEGRADED until that exact boundary arrives.
@@ -575,14 +524,8 @@ class LiveController:
                 # A delayed tick missed the safe boundary; wait for the next.
                 self._recovery_at = self._next_locked_bar_boundary(now)
 
-        # Check grace timeout for silence (beats-based)
-        if self._silence_beats > cfg.silence_grace_beats:
-            self._transition_to(
-                _State.STOPPED,
-                f"degraded silence grace exceeded: {self._silence_beats:.1f} beats",
-                now,
-            )
-            return
+        # Silence is not a stop command. DEGRADED keeps the locked anchor
+        # groove indefinitely; only an explicit stop ends playback.
 
     # ── Grid helpers ──────────────────────────────────────────────────
 

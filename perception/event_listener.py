@@ -6,6 +6,7 @@ Supports both offline (full buffer) and streaming (frame-by-frame) modes.
 
 from __future__ import annotations
 
+from collections import deque
 import logging
 from dataclasses import dataclass, field
 from typing import Callable
@@ -42,6 +43,7 @@ class AudioFrame:
 DEFAULT_THRESHOLD_MULTIPLIER: float = 0.75
 DEFAULT_STD_MULTIPLIER: float = 0.35
 DEFAULT_MIN_INTERVAL: float = 0.05  # 50 ms minimum between events
+DEFAULT_NOISE_FLOOR: float = 0.001  # ignore sub -60 dBFS interface noise
 DEFAULT_ENERGY_WINDOW: float = 0.05  # 50 ms window for energy computation
 
 
@@ -212,6 +214,9 @@ class EventListener:
         Onset detection std multiplier (default 0.35).
     min_interval : float
         Minimum interval between onsets in seconds (default 0.05).
+    noise_floor : float
+        Minimum absolute sample amplitude required in a frame. This prevents
+        quiet interface noise from becoming a stream of false onsets.
     """
 
     def __init__(
@@ -221,17 +226,20 @@ class EventListener:
         threshold_mult: float = DEFAULT_THRESHOLD_MULTIPLIER,
         std_mult: float = DEFAULT_STD_MULTIPLIER,
         min_interval: float = DEFAULT_MIN_INTERVAL,
+        noise_floor: float = DEFAULT_NOISE_FLOOR,
     ) -> None:
         self._sample_rate = sample_rate
         self._callback = callback
         self._threshold_mult = threshold_mult
         self._std_mult = std_mult
         self._min_interval = min_interval
+        self._noise_floor = noise_floor
 
         self._buffer: list[float] = []
         self._events: list[MusicalEvent] = []
         self._density_tracker = AttackDensityTracker(window_seconds=2.0)
         self._last_onset_time: float | None = None
+        self._recent_onset_levels: deque[float] = deque(maxlen=32)
         # Energy window samples
         self._energy_window = max(1, int(sample_rate * DEFAULT_ENERGY_WINDOW))
 
@@ -262,6 +270,16 @@ class EventListener:
         max_spectral = FFT_SIZE * 4
         if len(self._spectral_buffer) > max_spectral:
             self._spectral_buffer = self._spectral_buffer[-max_spectral:]
+
+        # Real interfaces have a small non-zero idle signal. The adaptive
+        # threshold alone eventually treats that noise as meaningful because
+        # both its mean and variance are tiny. Keep the rolling buffers warm,
+        # but do not search a clearly silent frame for attacks.
+        if not samples_f.size or float(np.max(np.abs(samples_f))) < self._noise_floor:
+            max_buffer = int(self._sample_rate * 0.5)
+            if len(self._buffer) > max_buffer:
+                self._buffer = self._buffer[-max_buffer:]
+            return
 
         # Process diff buffer in chunks
         buffer_array = np.array(self._buffer, dtype=np.float64)
@@ -307,9 +325,18 @@ class EventListener:
                         self._last_onset_time is None
                         or timestamp - self._last_onset_time >= self._min_interval
                     ):
-                        strength = float(
-                            min(1.0, smoothed[idx] / max(threshold, 1e-6))
+                        # Express strength relative to recent accepted attack
+                        # levels. The previous threshold ratio was necessarily
+                        # greater than one for every accepted peak and therefore
+                        # clamped every live onset to 1.0, erasing accents.
+                        onset_level = float(smoothed[idx])
+                        reference_level = max(
+                            max(self._recent_onset_levels, default=onset_level),
+                            onset_level,
+                            1e-9,
                         )
+                        strength = float(min(1.0, onset_level / reference_level))
+                        self._recent_onset_levels.append(onset_level)
 
                         # Determine frequency region from spectral buffer
                         onset_offset = len(self._spectral_buffer) - (
@@ -387,6 +414,7 @@ class EventListener:
         self._events.clear()
         self._density_tracker.reset()
         self._last_onset_time = None
+        self._recent_onset_levels.clear()
 
     @property
     def buffer_ms(self) -> float:

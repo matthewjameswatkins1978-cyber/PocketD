@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 
-from demo_live_clap_to_loopmidi import build_trace_record, main, save_trace
+from demo_live_clap_to_loopmidi import build_trace_record, main, play_count_in, save_trace
 from drummer.live_models import ControllerSnapshot
 from drummer.live_runtime import RuntimeSnapshot
+from tests.fake_clock import FakeClock
+from tests.fake_midi import FakeMidiSink
 
 
 def _snapshot() -> RuntimeSnapshot:
@@ -57,3 +59,15 @@ def test_trace_record_contains_operational_diagnostics() -> None:
 def test_trace_payload_is_saved_as_json(tmp_path) -> None:
     path = save_trace({"timeline": [{"state": "LISTENING"}]}, tmp_path / "trace.json")
     assert json.loads(path.read_text(encoding="utf-8"))["timeline"][0]["state"] == "LISTENING"
+
+
+def test_count_in_is_four_audible_hats_with_an_accented_last_click() -> None:
+    clock = FakeClock(0.0)
+    sink = FakeMidiSink(clock.now)
+    sleeps: list[float] = []
+
+    play_count_in(sink, 4, 0.5, sleeps.append)
+
+    assert [event.note for event in sink.events] == [42, 42, 42, 42]
+    assert [event.velocity for event in sink.events] == [85, 85, 85, 110]
+    assert sleeps == [0.5, 0.5, 0.5, 0.5]

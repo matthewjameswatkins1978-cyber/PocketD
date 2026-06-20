@@ -27,7 +27,8 @@ class _BarAdapter:
     state: BarAdapterState
     calls: int = 0
 
-    def adapt(self) -> BarAdapterState:
+    def adapt(self, reference_bpm: float | None = None) -> BarAdapterState:
+        del reference_bpm
         self.calls += 1
         return self.state
 
@@ -131,7 +132,7 @@ def test_entry_plans_two_bars_and_fires_downbeat_once() -> None:
     assert scheduler.queue_depth == 22
 
 
-def test_degradation_automatically_invalidates_runtime_queue() -> None:
+def test_degradation_replans_anchor_queue_without_stopping() -> None:
     clock, pulse, bar, controller, sink, scheduler, runtime = _rig(200.0)
     _enter(clock, pulse, bar, controller, runtime, 200.0)
     assert scheduler.queue_depth > 0
@@ -142,7 +143,7 @@ def test_degradation_automatically_invalidates_runtime_queue() -> None:
     runtime.tick()
 
     assert controller.state == "DEGRADED"
-    assert scheduler.queue_depth == 0
+    assert scheduler.queue_depth > 0
 
 
 def test_runtime_activates_mirror_only_for_following_repeated_bar() -> None:

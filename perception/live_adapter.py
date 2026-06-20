@@ -20,6 +20,45 @@ from perception.bar import BarState, BarTracker
 from perception.pulse import PulseState, PulseTracker
 
 
+_SAME_TEMPO_RATIO = 1.12
+_BAR_PULSE_RATIO = 1.12
+
+
+def _same_tempo_family(first: float, second: float) -> bool:
+    if first <= 0.0 or second <= 0.0:
+        return False
+    ratio = max(first, second) / min(first, second)
+    # Half/double-time readings are octave aliases of the same physical pulse,
+    # not independent evidence that should deadlock entry forever.
+    return ratio <= _SAME_TEMPO_RATIO or 2.0 / _SAME_TEMPO_RATIO <= ratio <= 2.0 * _SAME_TEMPO_RATIO
+
+
+def _matches_pulse_family(first: float, second: float) -> bool:
+    if first <= 0.0 or second <= 0.0:
+        return False
+    return max(first, second) / min(first, second) <= _BAR_PULSE_RATIO
+
+
+def _relative_runner_strength(
+    best_confidence: float,
+    best_support: int,
+    runner_confidence: float,
+    runner_support: int,
+) -> float:
+    """Return runner strength relative to the winner on a 0..1 scale.
+
+    Tracker hypothesis confidences exposed in state lists are normalised for
+    display.  Combining their ratio with supporting-event ratio preserves
+    meaningful ambiguity without mistaking those display weights for the
+    tracker's absolute confidence.
+    """
+    if best_confidence <= 0.0:
+        return 0.0
+    confidence_ratio = min(1.0, runner_confidence / best_confidence)
+    support_ratio = min(1.0, runner_support / max(best_support, 1))
+    return confidence_ratio * support_ratio
+
+
 def _default_clock() -> float:
     """Default monotonic clock: ``time.perf_counter``."""
     return _time.perf_counter()
@@ -75,12 +114,29 @@ class LivePulseAdapter:
             )
 
         best = hyps[0]
-        runner = hyps[1] if len(hyps) > 1 else None
+        runner = next(
+            (
+                hypothesis
+                for hypothesis in hyps[1:]
+                if not _same_tempo_family(best.bpm, hypothesis.bpm)
+            ),
+            None,
+        )
 
         winning_bpm = best.bpm
-        winning_conf = best.confidence
+        winning_conf = ps.confidence
         runner_bpm = runner.bpm if runner else None
-        runner_conf = runner.confidence if runner else 0.0
+        runner_strength = (
+            _relative_runner_strength(
+                best.confidence,
+                best.matches,
+                runner.confidence,
+                runner.matches,
+            )
+            if runner
+            else 0.0
+        )
+        runner_conf = winning_conf * runner_strength
 
         margin = winning_conf - runner_conf
 
@@ -132,7 +188,7 @@ class LiveBarAdapter:
         self._tracker = tracker
         self._clock = clock if clock is not None else _default_clock
 
-    def adapt(self) -> BarAdapterState:
+    def adapt(self, reference_bpm: float | None = None) -> BarAdapterState:
         """Read the tracker's current ``BarState`` and return an adapted record.
 
         The bar tracker's ``timestamp`` field is an audio-stream time.
@@ -169,11 +225,61 @@ class LiveBarAdapter:
             )
 
         hyps = bs.hypotheses
-        best = hyps[0]
-        runner = hyps[1] if len(hyps) > 1 else None
+        candidates = (
+            [
+                hypothesis
+                for hypothesis in hyps
+                if reference_bpm is not None
+                and _matches_pulse_family(reference_bpm, hypothesis.bpm)
+            ]
+            if reference_bpm is not None
+            else list(hyps)
+        )
+        if not candidates:
+            return BarAdapterState(
+                observed_at=now,
+                computed_at=now,
+                winning_bpm=None,
+                winning_confidence=0.0,
+                runner_up_confidence=0.0,
+                ambiguity_margin=0.0,
+                hypothesis_count=len(hyps),
+                support_count=0,
+                estimated_beat_in_bar=None,
+                bar_position=None,
+                downbeat_time=None,
+                bar_duration=None,
+                evidence_age=float("inf"),
+                is_confident=False,
+            )
 
-        runner_conf = runner.confidence if runner else 0.0
-        margin = best.confidence - runner_conf
+        global_displayed_best = hyps[0]
+        displayed_best = candidates[0]
+        best = (
+            bs.best_hypothesis
+            if reference_bpm is None and bs.best_hypothesis is not None
+            else displayed_best
+        )
+        runner = candidates[1] if len(candidates) > 1 else None
+
+        relative_to_global = (
+            min(1.0, displayed_best.confidence / global_displayed_best.confidence)
+            if global_displayed_best.confidence > 0.0
+            else 0.0
+        )
+        winning_conf = bs.confidence * relative_to_global
+        runner_strength = (
+            _relative_runner_strength(
+                displayed_best.confidence,
+                displayed_best.supporting_events,
+                runner.confidence,
+                runner.supporting_events,
+            )
+            if runner
+            else 0.0
+        )
+        runner_conf = winning_conf * runner_strength
+        margin = winning_conf - runner_conf
 
         evidence_age = now - best.last_updated if best.last_updated > 0 else float("inf")
 
@@ -204,7 +310,7 @@ class LiveBarAdapter:
             observed_at=now,
             computed_at=now,
             winning_bpm=round(winning_bpm, 1),
-            winning_confidence=round(best.confidence, 4),
+            winning_confidence=round(winning_conf, 4),
             runner_up_confidence=round(runner_conf, 4),
             ambiguity_margin=round(margin, 4),
             hypothesis_count=len(hyps),
@@ -214,5 +320,5 @@ class LiveBarAdapter:
             downbeat_time=downbeat_time,
             bar_duration=round(bar_duration, 6) if bar_duration else None,
             evidence_age=evidence_age,
-            is_confident=bs.is_confident,
+            is_confident=(winning_conf > 0.4 and best.supporting_events >= 4),
         )
